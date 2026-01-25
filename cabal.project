@@ -43,6 +43,20 @@ source-repository-package
 
 source-repository-package
   type: git
+  location: https://github.com/AccelerateHS/accelerate-llvm
+  tag: 14bc7ed93059aa210d2b585c48c943f0bbd8c73a
+  subdir: accelerate-llvm
+  --sha256: qGwo4M/y02HAj74H0NYRHCoCA+O6AI5E9HwEikBFAik=
+
+source-repository-package
+  type: git
+  location: https://github.com/AccelerateHS/accelerate-llvm
+  tag: 14bc7ed93059aa210d2b585c48c943f0bbd8c73a
+  subdir: accelerate-llvm-native
+  --sha256: qGwo4M/y02HAj74H0NYRHCoCA+O6AI5E9HwEikBFAik=
+
+source-repository-package
+  type: git
   location: https://github.com/haskell/hackage-security.git
   tag: 514482d7a5a7df3b010b9137f50fdc928e659e93
   subdir: hackage-security

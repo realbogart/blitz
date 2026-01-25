@@ -31,6 +31,7 @@
                 ghcid
                 ormolu
                 pkg-config
+                llvm
               ];
             };
           })
