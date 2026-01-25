@@ -112,6 +112,7 @@ mainDev = do
 
 runWindow :: IORef Tick -> IO ()
 runWindow tickRef = do
+  setConfigFlags [VsyncHint]
   window <- initWindow windowWidth windowHeight "blitz"
   setTargetFPS targetFramesPerSecond
 
@@ -128,7 +129,7 @@ runWindow tickRef = do
             envTex = tex,
             envPixels = pixels,
             envFrameRef = frameRef,
-            envRender = (GPU.run1 renderAcc)
+            envRender = GPU.run1 renderAcc
           }
 
   gameLoop env tickRef
