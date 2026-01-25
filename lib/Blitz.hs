@@ -107,7 +107,6 @@ mainDev = do
     Just _ -> do
       putStrLn "reloading"
       tickRef <- FS.readStore tickStore
-      -- Swap the tick implementation in-place; window keeps running.
       atomicWriteIORef tickRef tick
 
 runWindow :: IORef Tick -> IO ()
