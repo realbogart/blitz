@@ -4,9 +4,7 @@ import Control.Concurrent (forkOS)
 import Control.Monad
 import Data.Array.Accelerate as A
 import Data.Array.Accelerate.Data.Bits qualified as ABits
--- import Data.Array.Accelerate.LLVM.Native as CPU
 import Data.Array.Accelerate.LLVM.PTX as GPU
--- import Data.Array.Accelerate.Interpreter as CPU
 import Data.Bits
 import Data.IORef
 import Foreign.Marshal.Array (mallocArray)
@@ -16,12 +14,15 @@ import Foreign.Store qualified as FS
 import Raylib.Core
 import Raylib.Core.Textures
 import Raylib.Types
+import Raylib.Util
 import Raylib.Util.Colors
 
-type TickAction = IO ()
+-- Reloadable tick function:
+-- ghcid reload swaps this function in tickRef without restarting the window thread.
+type Tick = Env -> IO ()
 
 {-# NOINLINE tickStore #-}
-tickStore :: FS.Store (IORef TickAction)
+tickStore :: FS.Store (IORef Tick)
 tickStore = FS.Store 0
 
 windowWidth, windowHeight :: Int
@@ -34,13 +35,6 @@ targetFramesPerSecond = 60
 fbW, fbH :: Int
 fbW = 320
 fbH = 180
-
-rgba :: Word8 -> Word8 -> Word8 -> Word8 -> Word32
-rgba r g b a =
-  (Prelude.fromIntegral r `shiftL` 0)
-    .|. (Prelude.fromIntegral g `shiftL` 8)
-    .|. (Prelude.fromIntegral b `shiftL` 16)
-    .|. (Prelude.fromIntegral a `shiftL` 24)
 
 renderAcc :: Acc (Scalar Int) -> Acc (Array DIM2 Word32)
 renderAcc t =
@@ -62,9 +56,39 @@ copyPixels p = go 0
     go _ [] = pure ()
     go i (w : ws) = pokeByteOff p (i * 4) w >> go (i + 1) ws
 
+-- All state tick needs lives here.
+data Env = Env
+  { envWindow :: WindowResources,
+    envTex :: Texture,
+    envPixels :: Ptr Word32,
+    envFrameRef :: IORef Int
+  }
+
+-- You can move this into a separate module if you want even cleaner reloads.
+tick :: Tick
+tick env = do
+  frame <- readIORef env.envFrameRef
+  modifyIORef' env.envFrameRef (+ 1)
+
+  let arr = GPU.run1 renderAcc (A.fromList Z [frame] :: Scalar Int)
+
+  copyPixels env.envPixels (A.toList arr)
+  updateTexture env.envTex (castPtr env.envPixels)
+
+  sw <- getScreenWidth
+  sh <- getScreenHeight
+
+  beginDrawing
+  clearBackground black
+  let src = Rectangle 0 0 (Prelude.fromIntegral fbW) (Prelude.fromIntegral fbH)
+      dst = Rectangle 0 0 (Prelude.fromIntegral sw) (Prelude.fromIntegral sh)
+      origin = Vector2 0 0
+  drawTexturePro env.envTex src dst origin 0 white
+  endDrawing
+
 main :: IO ()
 main = do
-  tickRef <- newIORef (pure ())
+  tickRef <- newIORef tick
   runWindow tickRef
 
 mainDev :: IO ()
@@ -74,7 +98,7 @@ mainDev = do
   case existing of
     Nothing -> do
       putStrLn "booting"
-      tickRef <- newIORef (pure ())
+      tickRef <- newIORef tick
       FS.writeStore tickStore tickRef
       void $ forkOS $ do
         runWindow tickRef
@@ -83,9 +107,10 @@ mainDev = do
     Just _ -> do
       putStrLn "reloading"
       tickRef <- FS.readStore tickStore
-      atomicWriteIORef tickRef (pure ())
+      -- Swap the tick implementation in-place; window keeps running.
+      atomicWriteIORef tickRef tick
 
-runWindow :: IORef TickAction -> IO ()
+runWindow :: IORef Tick -> IO ()
 runWindow tickRef = do
   window <- initWindow windowWidth windowHeight "blitz"
   setTargetFPS targetFramesPerSecond
@@ -97,34 +122,23 @@ runWindow tickRef = do
   pixels <- mallocArray (fbW * fbH) :: IO (Ptr Word32)
   frameRef <- newIORef (0 :: Int)
 
-  atomicWriteIORef tickRef $ do
-    frame <- readIORef frameRef
-    modifyIORef' frameRef (+ 1)
+  let env =
+        Env
+          { envWindow = window,
+            envTex = tex,
+            envPixels = pixels,
+            envFrameRef = frameRef
+          }
 
-    let arr = GPU.run1 renderAcc (A.fromList Z [frame] :: Scalar Int)
-
-    copyPixels pixels (A.toList arr)
-    updateTexture tex (castPtr pixels)
-
-    sw <- getScreenWidth
-    sh <- getScreenHeight
-    beginDrawing
-    clearBackground black
-    let src = Rectangle 0 0 (Prelude.fromIntegral fbW) (Prelude.fromIntegral fbH)
-        dst = Rectangle 0 0 (Prelude.fromIntegral sw) (Prelude.fromIntegral sh)
-        origin = Vector2 0 0
-    drawTexturePro tex src dst origin 0 white
-    endDrawing
-
-  gameLoop tickRef
+  gameLoop env tickRef
 
   unloadTexture tex window
   closeWindow (Just window)
 
-gameLoop :: IORef TickAction -> IO ()
-gameLoop tickRef = do
+gameLoop :: Env -> IORef Tick -> IO ()
+gameLoop env tickRef = do
   shouldClose <- windowShouldClose
   unless shouldClose $ do
     tickFn <- readIORef tickRef
-    tickFn
-    gameLoop tickRef
+    tickFn env
+    gameLoop env tickRef
