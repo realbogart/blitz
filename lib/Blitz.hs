@@ -12,7 +12,6 @@ import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
 import Data.Vector.Storable qualified as VS
 import Foreign.Ptr (castPtr)
-import Foreign.Storable (sizeOf)
 import Foreign.Store qualified as FS
 import Raylib.Core
 import Raylib.Core.Textures
@@ -55,8 +54,7 @@ data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
     envFrameRef :: IORef Int,
-    envRender :: Scalar Int -> Array DIM2 Word32,
-    envNBytes :: Int
+    envRender :: Scalar Int -> Array DIM2 Word32
   }
 
 tick :: Tick
@@ -117,14 +115,12 @@ runWindow tickRef = do
 
   frameRef <- newIORef (0 :: Int)
 
-  let nbytes = fbW * fbH * sizeOf (undefined :: Word32)
   let env =
         Env
           { envWindow = window,
             envTex = tex,
             envFrameRef = frameRef,
-            envRender = GPU.run1 renderAcc,
-            envNBytes = nbytes
+            envRender = GPU.run1 renderAcc
           }
 
   gameLoop env tickRef
