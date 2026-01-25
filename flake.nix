@@ -66,6 +66,12 @@
                       echo "Missing upstream LICENSE file; placeholder added by Nix build." > LICENSE
                     fi
                   '';
+
+                  packages.accelerate-io-vector.prePatch = ''
+                    if [ ! -f LICENSE ]; then
+                      echo "Missing upstream LICENSE file; placeholder added by Nix build." > LICENSE
+                    fi
+                  '';
                 })
                 ({ pkgs, ... }: {
                   packages.cuda.components.library = {

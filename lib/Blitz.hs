@@ -6,6 +6,7 @@ import Data.Array.Accelerate as A
 import Data.Array.Accelerate.Data.Bits qualified as ABits
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.PTX as GPU
+-- import Data.Array.Accelerate.LLVM.Native as CPU
 import Data.IORef
 import Data.Vector.Storable qualified as VS
 import Foreign.Marshal.Array (mallocArray)
@@ -29,7 +30,7 @@ windowWidth = 1920
 windowHeight = 1200
 
 targetFramesPerSecond :: Int
-targetFramesPerSecond = 60
+targetFramesPerSecond = 120
 
 fbW, fbH :: Int
 fbW = 320
