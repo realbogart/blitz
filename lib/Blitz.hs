@@ -57,7 +57,8 @@ data Env = Env
     envTex :: Texture,
     envPixels :: Ptr Word32,
     envFrameRef :: IORef Int,
-    envRender :: Scalar Int -> Array DIM2 Word32
+    envRender :: Scalar Int -> Array DIM2 Word32,
+    envNBytes :: Int
   }
 
 tick :: Tick
@@ -65,7 +66,7 @@ tick env = do
   frame <- readIORef env.envFrameRef
   modifyIORef' env.envFrameRef (+ 1)
 
-  let arr = env.envRender (A.fromList Z [frame] :: Scalar Int)
+  let arr = env.envRender (A.fromFunction Z (const frame) :: Scalar Int)
   let vec :: VS.Vector Word32
       vec = AVS.toVectors arr
 
@@ -121,13 +122,15 @@ runWindow tickRef = do
   pixels <- mallocArray (fbW * fbH) :: IO (Ptr Word32)
   frameRef <- newIORef (0 :: Int)
 
+  let nbytes = fbW * fbH * sizeOf (undefined :: Word32)
   let env =
         Env
           { envWindow = window,
             envTex = tex,
             envPixels = pixels,
             envFrameRef = frameRef,
-            envRender = GPU.run1 renderAcc
+            envRender = GPU.run1 renderAcc,
+            envNBytes = nbytes
           }
 
   gameLoop env tickRef
