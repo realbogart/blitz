@@ -11,10 +11,7 @@ import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
 import Data.Vector.Storable qualified as VS
-import Foreign.Marshal.Alloc (free)
-import Foreign.Marshal.Array (mallocArray)
-import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, castPtr)
+import Foreign.Ptr (castPtr)
 import Foreign.Storable (sizeOf)
 import Foreign.Store qualified as FS
 import Raylib.Core
@@ -57,7 +54,6 @@ renderAcc t =
 data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
-    envPixels :: Ptr Word32,
     envFrameRef :: IORef Int,
     envRender :: Scalar Int -> Array DIM2 Word32,
     envNBytes :: Int
@@ -73,8 +69,7 @@ tick env = do
       vec = AVS.toVectors arr
 
   VS.unsafeWith vec $ \srcPtr -> do
-    copyBytes (castPtr env.envPixels) (castPtr srcPtr) env.envNBytes
-    updateTexture env.envTex (castPtr env.envPixels)
+    updateTexture env.envTex (castPtr srcPtr)
 
   sw <- getScreenWidth
   sh <- getScreenHeight
@@ -120,7 +115,6 @@ runWindow tickRef = do
   tex <- loadTextureFromImage img
   _ <- setTextureFilter tex TextureFilterPoint
 
-  pixels <- mallocArray (fbW * fbH) :: IO (Ptr Word32)
   frameRef <- newIORef (0 :: Int)
 
   let nbytes = fbW * fbH * sizeOf (undefined :: Word32)
@@ -128,7 +122,6 @@ runWindow tickRef = do
         Env
           { envWindow = window,
             envTex = tex,
-            envPixels = pixels,
             envFrameRef = frameRef,
             envRender = GPU.run1 renderAcc,
             envNBytes = nbytes
@@ -137,7 +130,6 @@ runWindow tickRef = do
   gameLoop env tickRef
     `finally` do
       unloadTexture tex window
-      free pixels
       closeWindow (Just window)
 
 gameLoop :: Env -> IORef Tick -> IO ()
