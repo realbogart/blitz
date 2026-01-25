@@ -4,7 +4,7 @@ import Control.Concurrent (forkOS)
 import Control.Monad
 import Data.Array.Accelerate as A
 import Data.Array.Accelerate.Data.Bits qualified as ABits
-import Data.Array.Accelerate.LLVM.Native as CPU
+-- import Data.Array.Accelerate.LLVM.Native as CPU
 import Data.Array.Accelerate.LLVM.PTX as GPU
 -- import Data.Array.Accelerate.Interpreter as CPU
 import Data.Bits
@@ -97,14 +97,11 @@ runWindow tickRef = do
   pixels <- mallocArray (fbW * fbH) :: IO (Ptr Word32)
   frameRef <- newIORef (0 :: Int)
 
-  let render1 = GPU.run1 renderAcc
-
   atomicWriteIORef tickRef $ do
     frame <- readIORef frameRef
     modifyIORef' frameRef (+ 1)
 
-    let arr :: Array DIM2 Word32
-        arr = render1 (A.fromList Z [frame] :: Scalar Int)
+    let arr = GPU.run1 renderAcc (A.fromList Z [frame] :: Scalar Int)
 
     copyPixels pixels (A.toList arr)
     updateTexture tex (castPtr pixels)
