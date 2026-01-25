@@ -1,13 +1,15 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Blitz where
 
 import Control.Concurrent (forkOS)
-import Control.Monad (forM_, unless, void)
+import Control.Monad (unless, void)
 import Data.Bits (shiftL, (.|.))
 import Data.IORef (IORef, atomicWriteIORef, modifyIORef', newIORef, readIORef)
 import Data.Word (Word32, Word8)
 import Foreign.Marshal.Array (mallocArray)
 import Foreign.Ptr (Ptr, castPtr)
-import Foreign.Storable (pokeElemOff)
+import Foreign.Storable (pokeByteOff)
 import Foreign.Store (Store (..))
 import Foreign.Store qualified as FS
 import Raylib.Core
@@ -32,13 +34,29 @@ fbW, fbH :: Int
 fbW = 320
 fbH = 180
 
--- Pack RGBA8 into a Word32 (raylib expects RGBA byte order for UNCOMPRESSED_R8G8B8A8)
 rgba :: Word8 -> Word8 -> Word8 -> Word8 -> Word32
 rgba r g b a =
   (fromIntegral r `shiftL` 0)
     .|. (fromIntegral g `shiftL` 8)
     .|. (fromIntegral b `shiftL` 16)
     .|. (fromIntegral a `shiftL` 24)
+
+fillPixels :: Ptr Word32 -> Int -> Int -> Int -> IO ()
+fillPixels p w h frame = go 0 0 0
+  where
+    !n = w * h
+    go !i !x !y
+      | i >= n = pure ()
+      | otherwise = do
+          let r = fromIntegral ((x + frame) `mod` 256)
+              g = fromIntegral ((y + frame) `mod` 256)
+              b = fromIntegral ((x + y) `mod` 256)
+              px = rgba r g b 255
+          pokeByteOff p (i * 4) px
+          let x' = x + 1
+          if x' == w
+            then go (i + 1) 0 (y + 1)
+            else go (i + 1) x' y
 
 main :: IO ()
 main = do
@@ -80,13 +98,7 @@ runWindow tickRef = do
     frame <- readIORef frameRef
     modifyIORef' frameRef (+ 1)
 
-    forM_ [0 .. fbH - 1] $ \y ->
-      forM_ [0 .. fbW - 1] $ \x -> do
-        let r = fromIntegral ((x + frame) `mod` 256)
-            g = fromIntegral ((y + frame) `mod` 256)
-            b = fromIntegral ((x + y) `mod` 256)
-            px = rgba r g b 255
-        pokeElemOff pixels (y * fbW + x) px
+    fillPixels pixels fbW fbH frame
 
     updateTexture tex (castPtr pixels)
 
