@@ -51,9 +51,10 @@ library
                       binary,
                       foreign-store,
                       h-raylib,
-                      accelerate
-                      -- accelerate-llvm,
-                      -- accelerate-llvm-native
+                      accelerate,
+                      accelerate-llvm,
+                      accelerate-llvm-native,
+                      accelerate-llvm-ptx
     hs-source-dirs:   src
     default-language: GHC2021
 

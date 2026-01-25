@@ -57,6 +57,19 @@ source-repository-package
 
 source-repository-package
   type: git
+  location: https://github.com/AccelerateHS/accelerate-llvm
+  tag: 14bc7ed93059aa210d2b585c48c943f0bbd8c73a
+  subdir: accelerate-llvm-ptx
+  --sha256: qGwo4M/y02HAj74H0NYRHCoCA+O6AI5E9HwEikBFAik=
+
+source-repository-package
+  type: git
+  location: https://github.com/tmcdonell/cuda
+  tag: 581b73fcb91611f7fcfed35fad387d013d5e238a
+  --sha256: KzrKSqpL1iks87Gt/YdYE2slLFPUhSGfMG4B920bIPk=
+
+source-repository-package
+  type: git
   location: https://github.com/haskell/hackage-security.git
   tag: 514482d7a5a7df3b010b9137f50fdc928e659e93
   subdir: hackage-security
