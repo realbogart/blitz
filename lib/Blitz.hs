@@ -9,8 +9,11 @@ import Data.Array.Accelerate.LLVM.PTX as GPU
 -- import Data.Array.Accelerate.LLVM.Native as CPU
 import Data.IORef
 import Data.Vector.Storable qualified as VS
+import Foreign.Marshal.Alloc (free)
 import Foreign.Marshal.Array (mallocArray)
+import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr)
+import Foreign.Storable (sizeOf)
 import Foreign.Store qualified as FS
 import Raylib.Core
 import Raylib.Core.Textures
@@ -66,8 +69,10 @@ tick env = do
   let vec :: VS.Vector Word32
       vec = AVS.toVectors arr
 
-  VS.unsafeWith vec $ \srcPtr ->
-    updateTexture env.envTex (castPtr srcPtr)
+  let nbytes = VS.length vec * sizeOf (undefined :: Word32)
+  VS.unsafeWith vec $ \srcPtr -> do
+    copyBytes (castPtr env.envPixels) (castPtr srcPtr) nbytes
+    updateTexture env.envTex (castPtr env.envPixels)
 
   sw <- getScreenWidth
   sh <- getScreenHeight
@@ -128,6 +133,7 @@ runWindow tickRef = do
   gameLoop env tickRef
 
   unloadTexture tex window
+  free pixels
   closeWindow (Just window)
 
 gameLoop :: Env -> IORef Tick -> IO ()
