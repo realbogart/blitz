@@ -49,7 +49,8 @@ library
                       stm,
                       transformers,
                       binary,
-                      foreign-store
+                      foreign-store,
+                      h-raylib
     hs-source-dirs:   src
     default-language: GHC2021
 

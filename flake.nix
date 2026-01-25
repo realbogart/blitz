@@ -13,6 +13,10 @@
       let
         overlays = [
           haskellNix.overlay
+          (self: super: {
+            c = self.glibc;
+            dl = self.glibc;
+          })
           (final: prev: {
             blitz = final.haskell-nix.project' {
               src = ./.;
