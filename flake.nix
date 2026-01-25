@@ -21,12 +21,14 @@
             blitz = final.haskell-nix.project' {
               src = ./.;
               compiler-nix-name = "ghc9101";
+
               shell.tools = {
                 cabal = { };
                 hlint = { };
                 haskell-language-server = { };
               };
-              shell.buildInputs = with pkgs; [
+
+              shell.buildInputs = with final; [
                 nixpkgs-fmt
                 ghcid
                 ormolu
@@ -36,13 +38,53 @@
                 cudaPackages.cudatoolkit
                 cudaPackages.cuda_nvcc
               ];
+
               shell.shellHook = ''
-                export ACCELERATE_LLVM_CLANG=${pkgs.llvmPackages.clang-unwrapped}/bin/clang
-                export NIX_LDFLAGS="$NIX_LDFLAGS -L${pkgs.cudaPackages.cudatoolkit}/lib -L${pkgs.cudaPackages.cudatoolkit}/lib/stubs"
+                export ACCELERATE_LLVM_CLANG=${final.llvmPackages.clang-unwrapped}/bin/clang
+                export NIX_LDFLAGS="$NIX_LDFLAGS -L${final.cudaPackages.cudatoolkit}/lib -L${final.cudaPackages.cudatoolkit}/lib/stubs"
                 export LD_LIBRARY_PATH="${
-                  pkgs.lib.makeLibraryPath [ pkgs.cudaPackages.cudatoolkit ]
+                  final.lib.makeLibraryPath [ final.cudaPackages.cudatoolkit ]
                 }:/run/opengl-driver/lib:$LD_LIBRARY_PATH"
               '';
+
+              modules = [
+                ({ pkgs, ... }: {
+                  packages.accelerate-llvm.prePatch = ''
+                    if [ ! -f LICENSE ]; then
+                      echo "Missing upstream LICENSE file; placeholder added by Nix build." > LICENSE
+                    fi
+                  '';
+
+                  packages.accelerate-llvm-native.prePatch = ''
+                    if [ ! -f LICENSE ]; then
+                      echo "Missing upstream LICENSE file; placeholder added by Nix build." > LICENSE
+                    fi
+                  '';
+
+                  packages.accelerate-llvm-ptx.prePatch = ''
+                    if [ ! -f LICENSE ]; then
+                      echo "Missing upstream LICENSE file; placeholder added by Nix build." > LICENSE
+                    fi
+                  '';
+                })
+                ({ pkgs, ... }: {
+                  packages.cuda.components.library = {
+                    build-tools = [ pkgs.cudaPackages.cuda_nvcc ];
+
+                    preConfigure = ''
+                      export CUDA_PATH=${pkgs.cudaPackages.cudatoolkit}
+                      export PATH=${pkgs.cudaPackages.cuda_nvcc}/bin:$PATH
+                    '';
+
+                    configureFlags = [
+                      "--extra-include-dirs=${pkgs.cudaPackages.cudatoolkit}/include"
+                      "--extra-lib-dirs=${pkgs.cudaPackages.cudatoolkit}/lib"
+                      "--extra-lib-dirs=${pkgs.cudaPackages.cudatoolkit}/lib64"
+                      "--extra-lib-dirs=${pkgs.cudaPackages.cudatoolkit}/lib/stubs"
+                    ];
+                  };
+                })
+              ];
             };
           })
         ];
