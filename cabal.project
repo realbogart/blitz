@@ -64,6 +64,13 @@ source-repository-package
 
 source-repository-package
   type: git
+  location: https://github.com/AccelerateHS/accelerate-io
+  tag: ab29ca6c4f96f1f346b8c196e268d1b44cd51a2e
+  subdir: accelerate-io-vector
+  --sha256: acOL3YFTUM1D8qj0AmIteUNgl3J/lAIpQ9vfXM7KtNg=
+
+source-repository-package
+  type: git
   location: https://github.com/tmcdonell/cuda
   tag: 581b73fcb91611f7fcfed35fad387d013d5e238a
   --sha256: KzrKSqpL1iks87Gt/YdYE2slLFPUhSGfMG4B920bIPk=

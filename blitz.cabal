@@ -54,7 +54,9 @@ library
                       accelerate,
                       accelerate-llvm,
                       accelerate-llvm-native,
-                      accelerate-llvm-ptx
+                      accelerate-llvm-ptx,
+                      accelerate-io-vector,
+                      vector
     hs-source-dirs:   src
     default-language: GHC2021
 

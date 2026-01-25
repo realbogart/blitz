@@ -4,9 +4,10 @@ import Control.Concurrent (forkOS)
 import Control.Monad
 import Data.Array.Accelerate as A
 import Data.Array.Accelerate.Data.Bits qualified as ABits
+import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.PTX as GPU
-import Data.Bits
 import Data.IORef
+import Data.Vector.Storable qualified as VS
 import Foreign.Marshal.Array (mallocArray)
 import Foreign.Ptr (Ptr, castPtr)
 import Foreign.Storable (pokeByteOff)
@@ -17,8 +18,6 @@ import Raylib.Types
 import Raylib.Util
 import Raylib.Util.Colors
 
--- Reloadable tick function:
--- ghcid reload swaps this function in tickRef without restarting the window thread.
 type Tick = Env -> IO ()
 
 {-# NOINLINE tickStore #-}
@@ -56,24 +55,25 @@ copyPixels p = go 0
     go _ [] = pure ()
     go i (w : ws) = pokeByteOff p (i * 4) w >> go (i + 1) ws
 
--- All state tick needs lives here.
 data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
     envPixels :: Ptr Word32,
-    envFrameRef :: IORef Int
+    envFrameRef :: IORef Int,
+    envRender :: Scalar Int -> Array DIM2 Word32
   }
 
--- You can move this into a separate module if you want even cleaner reloads.
 tick :: Tick
 tick env = do
   frame <- readIORef env.envFrameRef
   modifyIORef' env.envFrameRef (+ 1)
 
-  let arr = GPU.run1 renderAcc (A.fromList Z [frame] :: Scalar Int)
+  let arr = env.envRender (A.fromList Z [frame] :: Scalar Int)
+  let vec :: VS.Vector Word32
+      vec = AVS.toVectors arr
 
-  copyPixels env.envPixels (A.toList arr)
-  updateTexture env.envTex (castPtr env.envPixels)
+  VS.unsafeWith vec $ \srcPtr ->
+    updateTexture env.envTex (castPtr srcPtr)
 
   sw <- getScreenWidth
   sh <- getScreenHeight
@@ -126,7 +126,8 @@ runWindow tickRef = do
           { envWindow = window,
             envTex = tex,
             envPixels = pixels,
-            envFrameRef = frameRef
+            envFrameRef = frameRef,
+            envRender = (GPU.run1 renderAcc)
           }
 
   gameLoop env tickRef
