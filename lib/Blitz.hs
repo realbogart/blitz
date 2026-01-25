@@ -1,12 +1,14 @@
 module Blitz where
 
 import Control.Concurrent (forkOS)
+-- import Data.Array.Accelerate.LLVM.Native as CPU
+
+import Control.Exception (finally)
 import Control.Monad
 import Data.Array.Accelerate as A
 import Data.Array.Accelerate.Data.Bits qualified as ABits
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.PTX as GPU
--- import Data.Array.Accelerate.LLVM.Native as CPU
 import Data.IORef
 import Data.Vector.Storable qualified as VS
 import Foreign.Marshal.Alloc (free)
@@ -70,9 +72,8 @@ tick env = do
   let vec :: VS.Vector Word32
       vec = AVS.toVectors arr
 
-  let nbytes = VS.length vec * sizeOf (undefined :: Word32)
   VS.unsafeWith vec $ \srcPtr -> do
-    copyBytes (castPtr env.envPixels) (castPtr srcPtr) nbytes
+    copyBytes (castPtr env.envPixels) (castPtr srcPtr) env.envNBytes
     updateTexture env.envTex (castPtr env.envPixels)
 
   sw <- getScreenWidth
@@ -134,10 +135,10 @@ runWindow tickRef = do
           }
 
   gameLoop env tickRef
-
-  unloadTexture tex window
-  free pixels
-  closeWindow (Just window)
+    `finally` do
+      unloadTexture tex window
+      free pixels
+      closeWindow (Just window)
 
 gameLoop :: Env -> IORef Tick -> IO ()
 gameLoop env tickRef = do
