@@ -32,14 +32,13 @@
                 ormolu
                 pkg-config
                 llvm
+                llvmPackages.clang-unwrapped
                 cudaPackages.cudatoolkit
                 cudaPackages.cuda_nvcc
               ];
               shell.shellHook = ''
-                export ACCELERATE_LLVM_CLANG=${pkgs.clang}/bin/clang
+                export ACCELERATE_LLVM_CLANG=${pkgs.llvmPackages.clang-unwrapped}/bin/clang
                 export NIX_LDFLAGS="$NIX_LDFLAGS -L${pkgs.cudaPackages.cudatoolkit}/lib -L${pkgs.cudaPackages.cudatoolkit}/lib/stubs"
-
-                # Runtime: real libcuda.so comes from the driver. On NixOS it's typically here.
                 export LD_LIBRARY_PATH="${
                   pkgs.lib.makeLibraryPath [ pkgs.cudaPackages.cudatoolkit ]
                 }:/run/opengl-driver/lib:$LD_LIBRARY_PATH"
