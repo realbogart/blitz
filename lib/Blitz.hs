@@ -11,7 +11,6 @@ import Data.IORef
 import Data.Vector.Storable qualified as VS
 import Foreign.Marshal.Array (mallocArray)
 import Foreign.Ptr (Ptr, castPtr)
-import Foreign.Storable (pokeByteOff)
 import Foreign.Store qualified as FS
 import Raylib.Core
 import Raylib.Core.Textures
@@ -49,12 +48,6 @@ renderAcc t =
           ABits..|. (g `ABits.shiftL` 8)
           ABits..|. (b `ABits.shiftL` 16)
           ABits..|. (a `ABits.shiftL` 24)
-
-copyPixels :: Ptr Word32 -> [Word32] -> IO ()
-copyPixels p = go 0
-  where
-    go _ [] = pure ()
-    go i (w : ws) = pokeByteOff p (i * 4) w >> go (i + 1) ws
 
 data Env = Env
   { envWindow :: WindowResources,

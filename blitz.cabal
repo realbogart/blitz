@@ -55,6 +55,7 @@ library
                       accelerate-llvm,
                       accelerate-llvm-native,
                       accelerate-llvm-ptx,
+                      accelerate-io,
                       accelerate-io-vector,
                       vector
     hs-source-dirs:   src
