@@ -46,24 +46,29 @@ circleTag, lineTag :: Exp Int32
 circleTag = A.constant circleTagVal
 lineTag = A.constant lineTagVal
 
---------------------------------------------------------------------------------
--- Rendering Logic
---------------------------------------------------------------------------------
-
-distToSegment :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float
-distToSegment px py x1 y1 x2 y2 =
+distToSegmentSq ::
+  Exp Float ->
+  Exp Float ->
+  Exp Float ->
+  Exp Float ->
+  Exp Float ->
+  Exp Float ->
+  Exp Float
+distToSegmentSq px py x1 y1 x2 y2 =
   let dx = x2 - x1
       dy = y2 - y1
       l2 = dx * dx + dy * dy
+      vx = px - x1
+      vy = py - y1
    in A.cond
         (l2 A.== 0)
-        (A.sqrt ((px - x1) * (px - x1) + (py - y1) * (py - y1)))
-        ( let t = A.max 0 (A.min 1 (((px - x1) * dx + (py - y1) * dy) / l2))
+        (vx * vx + vy * vy)
+        ( let t = A.max 0 (A.min 1 ((vx * dx + vy * dy) / l2))
               projX = x1 + t * dx
               projY = y1 + t * dy
               dxp = px - projX
               dyp = py - projY
-           in A.sqrt (dxp * dxp + dyp * dyp)
+           in dxp * dxp + dyp * dyp
         )
 
 renderAcc ::
@@ -113,7 +118,7 @@ renderAcc input =
                     inBox
                       A.&& ( (tag A.== circleTag)
                                ? ( (dxp * dxp) + (dyp * dyp) A.< s * s,
-                                   distToSegment px py x1 y1 x2 y2 A.< s
+                                   distToSegmentSq px py x1 y1 x2 y2 A.< s
                                  )
                            )
 
