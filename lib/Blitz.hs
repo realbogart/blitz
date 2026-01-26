@@ -169,6 +169,7 @@ runWindow tickRef = do
   setConfigFlags [VsyncHint]
   window <- initWindow windowWidth windowHeight "blitz"
   setTargetFPS targetFramesPerSecond
+  -- toggleFullscreen
 
   img <- genImageColor fbW fbH black
   tex <- loadTextureFromImage img
