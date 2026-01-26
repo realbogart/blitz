@@ -66,47 +66,75 @@ distToSegment px py x1 y1 x2 y2 =
            in A.sqrt (dxp * dxp + dyp * dyp)
         )
 
-renderAcc :: Acc (Vector Primitive) -> Acc (Array DIM2 Word32)
-renderAcc primitives =
-  A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
-    let Z :. y :. x = unlift ix :: Z :. Exp Int :. Exp Int
-        px = A.fromIntegral x
-        py = A.fromIntegral y
+renderAcc ::
+  Acc
+    ( Vector Int32, -- tags
+      Vector Float, -- x1s
+      Vector Float, -- y1s
+      Vector Float, -- x2s
+      Vector Float, -- y2s
+      Vector Float, -- sizes
+      Vector Word32 -- colors
+    ) ->
+  Acc (Array DIM2 Word32)
+renderAcc input =
+  let (tags, x1s, y1s, x2s, y2s, ss, cols) = unlift input
+   in A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
+        let Z :. y :. x = unlift ix :: Z :. Exp Int :. Exp Int
+            px = A.fromIntegral x
+            py = A.fromIntegral y
 
-        count = A.size primitives
-        initial = lift (A.constant 0 :: Exp Int, A.constant 0xFF000000 :: Exp Word32)
+            count = A.size tags
+            initial = lift (A.constant 0 :: Exp Int, A.constant 0xFF000000 :: Exp Word32)
 
-        wcond st = let (i, _) = unlift st :: (Exp Int, Exp Word32) in i A.< count
+            wcond st = let (i, _) = unlift st :: (Exp Int, Exp Word32) in i A.< count
 
-        body st =
-          let (i, acc) = unlift st :: (Exp Int, Exp Word32)
-              prim = primitives A.!! i
-              (tag, x1, y1, x2, y2, s, col) = unlift prim :: (Exp Int32, Exp Float, Exp Float, Exp Float, Exp Float, Exp Float, Exp Word32)
+            body st =
+              let (i, acc) = unlift st :: (Exp Int, Exp Word32)
+                  tag = tags A.!! i
+                  x1 = x1s A.!! i
+                  y1 = y1s A.!! i
+                  x2 = x2s A.!! i
+                  y2 = y2s A.!! i
+                  s = ss A.!! i
+                  col = cols A.!! i
 
-              minX = (tag A.== circleTag) ? (x1 - s, A.min x1 x2 - s)
-              maxX = (tag A.== circleTag) ? (x1 + s, A.max x1 x2 + s)
-              minY = (tag A.== circleTag) ? (y1 - s, A.min y1 y2 - s)
-              maxY = (tag A.== circleTag) ? (y1 + s, A.max y1 y2 + s)
+                  minX = (tag A.== circleTag) ? (x1 - s, A.min x1 x2 - s)
+                  maxX = (tag A.== circleTag) ? (x1 + s, A.max x1 x2 + s)
+                  minY = (tag A.== circleTag) ? (y1 - s, A.min y1 y2 - s)
+                  maxY = (tag A.== circleTag) ? (y1 + s, A.max y1 y2 + s)
 
-              inBox = px A.>= minX A.&& px A.<= maxX A.&& py A.>= minY A.&& py A.<= maxY
+                  inBox = px A.>= minX A.&& px A.<= maxX A.&& py A.>= minY A.&& py A.<= maxY
 
-              isHit =
-                inBox
-                  A.&& ( (tag A.== circleTag)
-                           ? ( (px - x1) * (px - x1) + (py - y1) * (py - y1) A.< s * s,
-                               distToSegment px py x1 y1 x2 y2 A.< s
-                             )
-                       )
+                  dxp = px - x1
+                  dyp = py - y1
 
-              newAcc = isHit ? (col, acc)
-           in lift (i + 1, newAcc)
-     in A.snd (A.while wcond body initial)
+                  isHit =
+                    inBox
+                      A.&& ( (tag A.== circleTag)
+                               ? ( (dxp * dxp) + (dyp * dyp) A.< s * s,
+                                   distToSegment px py x1 y1 x2 y2 A.< s
+                                 )
+                           )
+
+                  newAcc = isHit ? (col, acc)
+               in lift (i + 1, newAcc)
+         in A.snd (A.while wcond body initial)
 
 data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
     envFrameRef :: IORef Int,
-    envRender :: Array DIM1 Primitive -> Array DIM2 Word32
+    envRender ::
+      ( Vector Int32,
+        Vector Float,
+        Vector Float,
+        Vector Float,
+        Vector Float,
+        Vector Float,
+        Vector Word32
+      ) ->
+      Array DIM2 Word32
   }
 
 tick :: Tick
@@ -128,10 +156,16 @@ tick env = do
               else (lineTagVal, 160, 100, x, y, 1, col)
 
   let (t, x1, y1, x2, y2, s, c) = L.unzip7 rawScene
-  let sceneVectors = ((((((((), VS.fromList t), VS.fromList x1), VS.fromList y1), VS.fromList x2), VS.fromList y2), VS.fromList s), VS.fromList c)
+      sh = Z :. numPrims
+      accT = A.fromList sh t
+      accX1 = A.fromList sh x1
+      accY1 = A.fromList sh y1
+      accX2 = A.fromList sh x2
+      accY2 = A.fromList sh y2
+      accS = A.fromList sh s
+      accC = A.fromList sh c
 
-  let accScene = AVS.fromVectors (Z :. L.length rawScene) sceneVectors
-  let arr = env.envRender accScene
+  let arr = env.envRender (accT, accX1, accY1, accX2, accY2, accS, accC)
   let vec = AVS.toVectors arr
 
   VS.unsafeWith vec $ \srcPtr -> updateTexture env.envTex (castPtr srcPtr)
