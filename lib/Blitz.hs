@@ -6,6 +6,7 @@ import Control.Monad
 import Data.Array.Accelerate as A
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.Native as CPU
+-- import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
 import Data.List qualified as L
 import Data.Vector.Storable qualified as VS
