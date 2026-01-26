@@ -4,13 +4,16 @@ import Control.Concurrent (forkOS)
 import Control.Exception (finally)
 import Control.Monad
 import Data.Array.Accelerate as A
--- import Data.Array.Accelerate.Data.Bits qualified as ABits
+import Data.Array.Accelerate.Data.Bits qualified as ABits
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.Native as CPU
 -- import Data.Array.Accelerate.LLVM.PTX as GPU
+import Data.Bits qualified as DBits
 import Data.IORef
+-- import Data.Int (Int32)
 import Data.List qualified as L
 import Data.Vector.Storable qualified as VS
+-- import Data.Word (Word32)
 import Foreign.Ptr (castPtr)
 import Foreign.Store qualified as FS
 import Raylib.Core
@@ -37,90 +40,158 @@ fbW, fbH :: Int
 fbW = 320
 fbH = 200
 
-tileSize :: Int
-tileSize = 16
+-- (Tag, x1, y1, x2, y2, Size/Thickness, Color, MortonCode)
+type Primitive = (Int32, Float, Float, Float, Float, Float, Word32, Word32)
 
-tilesW, tilesH :: Int
-tilesW = fbW `div` tileSize -- 320 / 16 = 20
-tilesH = fbH `div` tileSize -- 200 / 16 = 12.5 -> 13
-
-maxPrimsPerTile :: Int
-maxPrimsPerTile = 64
-
--- (Tag, x1, y1, x2, y2, Size/Thickness, Color)
-type Primitive = (Int32, Float, Float, Float, Float, Float, Word32)
-
--- Plain values for the CPU
 circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
 lineTagVal = 1
 
--- GPU Expressions for the Shader
 circleTag, lineTag :: Exp Int32
 circleTag = A.constant circleTagVal
 lineTag = A.constant lineTagVal
 
--- | Distance from point (px, py) to line segment (x1, y1) -> (x2, y2)
+--------------------------------------------------------------------------------
+-- Spatial Hashing (Morton Codes)
+--------------------------------------------------------------------------------
+
+part1by1 :: Exp Word32 -> Exp Word32
+part1by1 n =
+  let n1 = (n ABits..|. (n `ABits.shiftL` 8)) ABits..&. 0x00FF00FF
+      n2 = (n1 ABits..|. (n1 `ABits.shiftL` 4)) ABits..&. 0x0F0F0F0F
+      n3 = (n2 ABits..|. (n2 `ABits.shiftL` 2)) ABits..&. 0x33333333
+      n4 = (n3 ABits..|. (n3 `ABits.shiftL` 1)) ABits..&. 0x55555555
+   in n4
+
+morton2D_GPU :: Exp Int32 -> Exp Int32 -> Exp Word32
+morton2D_GPU x y =
+  let x' = A.fromIntegral x :: Exp Word32
+      y' = A.fromIntegral y :: Exp Word32
+   in (part1by1 x') ABits..|. ((part1by1 y') `ABits.shiftL` 1)
+
+part1by1_CPU :: Word32 -> Word32
+part1by1_CPU n =
+  let n1 = (n `DBits.xor` (n `DBits.shiftL` 8)) DBits..&. 0x00FF00FF
+      n2 = (n1 `DBits.xor` (n1 `DBits.shiftL` 4)) DBits..&. 0x0F0F0F0F
+      n3 = (n2 `DBits.xor` (n2 `DBits.shiftL` 2)) DBits..&. 0x33333333
+      n4 = (n3 `DBits.xor` (n3 `DBits.shiftL` 1)) DBits..&. 0x55555555
+   in n4
+
+getMorton_CPU :: Int32 -> Float -> Float -> Float -> Float -> Word32
+getMorton_CPU tag x1 y1 x2 y2 =
+  let cx = if tag Prelude.== 0 then x1 else (x1 + x2) / 2
+      cy = if tag Prelude.== 0 then y1 else (y1 + y2) / 2
+      mx = Prelude.floor (Prelude.max 0 (Prelude.min 65535 (cx / Prelude.fromIntegral fbW * 65535)))
+      my = Prelude.floor (Prelude.max 0 (Prelude.min 65535 (cy / Prelude.fromIntegral fbH * 65535)))
+   in (part1by1_CPU mx) DBits..|. (part1by1_CPU my `DBits.shiftL` 1)
+
+-- Note: using ior and setBit from Data.Bits for CPU side.
+
+--------------------------------------------------------------------------------
+-- Rendering
+--------------------------------------------------------------------------------
+
 distToSegment :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float
 distToSegment px py x1 y1 x2 y2 =
   let dx = x2 - x1
       dy = y2 - y1
       l2 = dx * dx + dy * dy
-      t = A.max 0 (A.min 1 (((px - x1) * dx + (py - y1) * dy) / l2))
-      projX = x1 + t * dx
-      projY = y1 + t * dy
-      dxp = px - projX
-      dyp = py - projY
-   in A.sqrt (dxp * dxp + dyp * dyp)
+   in A.cond
+        (l2 A.< 0.0001)
+        (A.sqrt ((px - x1) * (px - x1) + (py - y1) * (py - y1))) -- Treat as point
+        ( let t = A.max 0 (A.min 1 (((px - x1) * dx + (py - y1) * dy) / l2))
+              projX = x1 + t * dx
+              projY = y1 + t * dy
+              dxp = px - projX
+              dyp = py - projY
+           in A.sqrt (dxp * dxp + dyp * dyp)
+        )
 
-renderAcc :: Acc (Vector Primitive) -> Acc (Array DIM2 Word32)
-renderAcc primitives =
-  A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
-    let Z :. y :. x = unlift ix :: Z :. Exp Int :. Exp Int
-        px = A.fromIntegral x
-        py = A.fromIntegral y
+renderAcc ::
+  Acc
+    ( Vector Int32,
+      Vector Float,
+      Vector Float,
+      Vector Float,
+      Vector Float,
+      Vector Float,
+      Vector Word32,
+      Vector Word32
+    ) ->
+  Acc (Array DIM2 Word32)
+renderAcc input =
+  let (tags, x1s, y1s, x2s, y2s, ss, cols, mortons) = unlift input
+   in A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
+        let Z :. y :. x = unlift ix :: Z :. Exp Int :. Exp Int
+            px = A.fromIntegral x
+            py = A.fromIntegral y
+            targetMorton = morton2D_GPU (A.fromIntegral (x `div` 32)) (A.fromIntegral (y `div` 32))
+            count = A.size tags
 
-        count = A.size primitives
-        initial = lift (A.constant 0 :: Exp Int, A.constant 0xFF000000 :: Exp Word32)
+            -- Binary Search
+            bsInitial = lift (A.constant 0 :: Exp Int, count)
+            bsCond st = let (low, high) = unlift st :: (Exp Int, Exp Int) in low A.< high
+            bsBody st =
+              let (low, high) = unlift st :: (Exp Int, Exp Int)
+                  mid = (low + high) `div` 2
+                  mCode = mortons A.!! mid
+               in (mCode A.< targetMorton) ? (lift (mid + 1, high), lift (low, mid))
 
-        wcond st = let (i, _) = unlift st :: (Exp Int, Exp Word32) in i A.< count
+            (startIdx, _) = unlift (A.while bsCond bsBody bsInitial) :: (Exp Int, Exp Int)
 
-        body st =
-          let (i, acc) = unlift st :: (Exp Int, Exp Word32)
-              prim = primitives A.!! i
-              (tag, x1, y1, x2, y2, s, col) = unlift prim
+            -- Loop
+            initial = lift (startIdx, A.constant 0xFF000000 :: Exp Word32, A.constant False :: Exp Bool)
+            wcond st =
+              let (i, _, _) = unlift st :: (Exp Int, Exp Word32, Exp Bool)
+               in i A.< count
 
-              -- 1. Calculate the Bounding Box
-              -- For circles, it's center +/- radius.
-              -- For lines, it's min/max of endpoints +/- thickness.
-              minX = A.cond (tag A.== circleTag) (x1 - s) (A.min x1 x2 - s)
-              maxX = A.cond (tag A.== circleTag) (x1 + s) (A.max x1 x2 + s)
-              minY = A.cond (tag A.== circleTag) (y1 - s) (A.min y1 y2 - s)
-              maxY = A.cond (tag A.== circleTag) (y1 + s) (A.max y1 y2 + s)
+            body st =
+              let (i, acc, _) = unlift st :: (Exp Int, Exp Word32, Exp Bool)
+                  tag = tags A.!! i
+                  x1 = x1s A.!! i
+                  y1 = y1s A.!! i
+                  x2 = x2s A.!! i
+                  y2 = y2s A.!! i
+                  s = ss A.!! i
+                  col = cols A.!! i
 
-              -- 2. The Short-Circuit Check
-              inBox = px A.>= minX A.&& px A.<= maxX A.&& py A.>= minY A.&& py A.<= maxY
+                  isCircle = tag A.== circleTag
 
-              -- 3. Only run expensive math if inside the box
-              dxp = px - x1
-              dyp = py - y1
+                  -- Use distToSegment only for lines, simple dist for circles
+                  dist =
+                    isCircle
+                      ? ( A.sqrt ((px - x1) * (px - x1) + (py - y1) * (py - y1)),
+                          distToSegment px py x1 y1 x2 y2
+                        )
 
-              newAcc =
-                inBox
-                  ? ( A.cond
-                        (tag A.== circleTag)
-                        ((dxp * dxp) + (dyp * dyp) A.< s * s ? (col, acc))
-                        (distToSegment px py x1 y1 x2 y2 A.< s ? (col, acc)),
-                      acc
-                    )
-           in lift (i + 1, newAcc)
-     in A.snd (A.while wcond body initial)
+                  -- The Hit check
+                  isHit = dist A.< s
+
+                  -- Only overwrite if it's actually a hit, otherwise keep background
+                  newAcc = isHit ? (col, acc)
+               in lift (i + 1, newAcc, A.constant False)
+         in let (_, finalCol, _) = unlift (A.while wcond body initial) :: (Exp Int, Exp Word32, Exp Bool)
+             in finalCol
+
+--------------------------------------------------------------------------------
+-- Environment & Loop
+--------------------------------------------------------------------------------
 
 data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
     envFrameRef :: IORef Int,
-    envRender :: Array DIM1 Primitive -> Array DIM2 Word32
+    envRender ::
+      ( Vector Int32,
+        Vector Float,
+        Vector Float,
+        Vector Float,
+        Vector Float,
+        Vector Float,
+        Vector Word32,
+        Vector Word32
+      ) ->
+      Array DIM2 Word32
   }
 
 tick :: Tick
@@ -128,28 +199,49 @@ tick env = do
   f <- readIORef env.envFrameRef
   modifyIORef' env.envFrameRef (+ 1)
   let frame = Prelude.fromIntegral f :: Float
-
-  -- Stress Test: Generate 500 primitives
-  let numPrims = 500
-      rawScene = Prelude.map genPrim [1 .. numPrims]
+      numPrims = 500
 
       genPrim i =
         let fi = Prelude.fromIntegral i
-            x = 160 + 140 * cos (frame / 30 + fi * 0.1)
-            y = 100 + 80 * sin (frame / 50 + fi * 0.2)
-            col =
-              0xFF000000
-                + (Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF))
-         in if i `Prelude.rem` 2 Prelude.== 0
-              then (circleTagVal, x, y, 0, 0, 5 + 3 * sin (frame / 10 + fi), col)
-              else (lineTagVal, 160, 100, x, y, 1, col)
+            -- Use fbW/fbH instead of hardcoded 160/100
+            w = Prelude.fromIntegral fbW
+            h = Prelude.fromIntegral fbH
+            x = (w / 2) + (w / 3) * Prelude.cos (frame / 30 + fi * 0.1)
+            y = (h / 2) + (h / 3) * Prelude.sin (frame / 50 + fi * 0.2)
+            tag = if i `Prelude.rem` 2 Prelude.== 0 then circleTagVal else lineTagVal
+            -- Bright colors to verify visibility
+            col = 0xFF00FFFF -- Yellow (RGBA/ABGR depending on platform)
+            (x2, y2) = if tag Prelude.== circleTagVal then (x, y) else (w / 2, h / 2)
+            s = if tag Prelude.== circleTagVal then 3 + 2 * Prelude.sin (frame / 10 + fi) else 1
+            m = getMorton_CPU tag x y x2 y2
+         in (tag, x, y, x2, y2, s, col, m)
 
-  -- The conversion logic remains the same
-  let (t, x1, y1, x2, y2, s, c) = L.unzip7 rawScene
-  let sceneVectors = ((((((((), VS.fromList t), VS.fromList x1), VS.fromList y1), VS.fromList x2), VS.fromList y2), VS.fromList s), VS.fromList c)
+      rawScene = L.sortOn (\(_, _, _, _, _, _, _, m) -> m) (Prelude.map genPrim [1 .. numPrims])
 
-  let accScene = AVS.fromVectors (Z :. L.length rawScene) sceneVectors
-  let arr = env.envRender accScene
+  -- Manually unzip the 8-tuple list
+  -- Ensure this order matches (tag, x1, y1, x2, y2, s, col, m)
+  let (lt, lx1, ly1, lx2, ly2, ls, lc, lm) =
+        L.foldr
+          ( \(t, x1, y1, x2, y2, s, c, m) (ts, x1s, y1s, x2s, y2s, ss, cs, ms) ->
+              (t : ts, x1 : x1s, y1 : y1s, x2 : x2s, y2 : y2s, s : ss, c : cs, m : ms)
+          )
+          ([], [], [], [], [], [], [], [])
+          rawScene
+
+  -- Convert each list to a separate Accelerate Array (Plain Array, not Acc)
+  let n = L.length rawScene
+      sh = Z :. n
+      accTags = A.fromList sh lt
+      accX1 = A.fromList sh lx1
+      accY1 = A.fromList sh ly1
+      accX2 = A.fromList sh lx2
+      accY2 = A.fromList sh ly2
+      accS = A.fromList sh ls
+      accC = A.fromList sh lc
+      accM = A.fromList sh lm
+
+  -- Use the compiled render function from env
+  let arr = (env.envRender) (accTags, accX1, accY1, accX2, accY2, accS, accC, accM)
   let vec = AVS.toVectors arr
 
   VS.unsafeWith vec $ \srcPtr -> updateTexture env.envTex (castPtr srcPtr)
@@ -179,7 +271,6 @@ mainDev = do
       void $ forkOS $ do
         runWindow tickRef
         FS.deleteStore tickStore
-        putStrLn "shutting down"
     Just _ -> do
       putStrLn "reloading"
       tickRef <- FS.readStore tickStore
@@ -190,31 +281,22 @@ runWindow tickRef = do
   setConfigFlags [VsyncHint]
   window <- initWindow windowWidth windowHeight "blitz"
   setTargetFPS targetFramesPerSecond
-  -- toggleFullscreen
 
   img <- genImageColor fbW fbH black
   tex <- loadTextureFromImage img
   _ <- setTextureFilter tex TextureFilterPoint
+  frameRef <- newIORef 0
 
-  frameRef <- newIORef (0 :: Int)
+  let env = Env window tex frameRef (CPU.run1 renderAcc)
 
-  let env =
-        Env
-          { envWindow = window,
-            envTex = tex,
-            envFrameRef = frameRef,
-            envRender = CPU.run1 renderAcc
-          }
-
-  gameLoop env tickRef
-    `finally` do
-      unloadTexture tex window
-      closeWindow (Just window)
+  gameLoop env tickRef `finally` do
+    unloadTexture tex window
+    closeWindow (Just window)
 
 gameLoop :: Env -> IORef Tick -> IO ()
 gameLoop env tickRef = do
-  shouldClose <- windowShouldClose
-  unless shouldClose $ do
+  sc <- windowShouldClose
+  unless sc $ do
     tickFn <- readIORef tickRef
     tickFn env
     gameLoop env tickRef
