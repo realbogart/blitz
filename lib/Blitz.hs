@@ -71,19 +71,110 @@ distToSegmentSq px py x1 y1 x2 y2 =
            in dxp * dxp + dyp * dyp
         )
 
-renderAcc ::
-  Acc
-    ( Vector Int32, -- tags
-      Vector Float, -- x1s
-      Vector Float, -- y1s
-      Vector Float, -- x2s
-      Vector Float, -- y2s
-      Vector Float, -- sizes
-      Vector Word32 -- colors
-    ) ->
-  Acc (Array DIM2 Word32)
-renderAcc input =
-  let (tags, x1s, y1s, x2s, y2s, ss, cols) = unlift input
+type Inputs =
+  ( Vector Int32, -- tags
+    Vector Float, -- x1s
+    Vector Float, -- y1s
+    Vector Float, -- x2s
+    Vector Float, -- y2s
+    Vector Float, -- sizes
+    Vector Word32 -- colors
+  )
+
+type InputsWithBounds =
+  ( Vector Int32, -- tags
+    Vector Float, -- x1s
+    Vector Float, -- y1s
+    Vector Float, -- x2s
+    Vector Float, -- y2s
+    Vector Float, -- sizes
+    Vector Word32, -- colors
+    Vector Float, -- minXs
+    Vector Float, -- maxXs
+    Vector Float, -- minYs
+    Vector Float -- maxYs
+  )
+
+precomputeBounds :: Acc Inputs -> Acc InputsWithBounds
+precomputeBounds input =
+  let ( tags,
+        x1s,
+        y1s,
+        x2s,
+        y2s,
+        ss,
+        cols
+        ) =
+          (unlift input :: (Acc (Vector Int32), Acc (Vector Float), Acc (Vector Float), Acc (Vector Float), Acc (Vector Float), Acc (Vector Float), Acc (Vector Word32)))
+
+      n = A.size tags
+      sh1 = index1 n
+
+      minXs =
+        A.generate sh1 $ \ix ->
+          let i = unindex1 ix
+              tag = tags A.!! i
+              x1 = x1s A.!! i
+              x2 = x2s A.!! i
+              s = ss A.!! i
+           in (tag A.== circleTag) ? (x1 - s, A.min x1 x2 - s)
+
+      maxXs =
+        A.generate sh1 $ \ix ->
+          let i = unindex1 ix
+              tag = tags A.!! i
+              x1 = x1s A.!! i
+              x2 = x2s A.!! i
+              s = ss A.!! i
+           in (tag A.== circleTag) ? (x1 + s, A.max x1 x2 + s)
+
+      minYs =
+        A.generate sh1 $ \ix ->
+          let i = unindex1 ix
+              tag = tags A.!! i
+              y1 = y1s A.!! i
+              y2 = y2s A.!! i
+              s = ss A.!! i
+           in (tag A.== circleTag) ? (y1 - s, A.min y1 y2 - s)
+
+      maxYs =
+        A.generate sh1 $ \ix ->
+          let i = unindex1 ix
+              tag = tags A.!! i
+              y1 = y1s A.!! i
+              y2 = y2s A.!! i
+              s = ss A.!! i
+           in (tag A.== circleTag) ? (y1 + s, A.max y1 y2 + s)
+   in lift (tags, x1s, y1s, x2s, y2s, ss, cols, minXs, maxXs, minYs, maxYs)
+
+renderAccWithBounds :: Acc InputsWithBounds -> Acc (Array DIM2 Word32)
+renderAccWithBounds input =
+  let ( tags,
+        x1s,
+        y1s,
+        x2s,
+        y2s,
+        ss,
+        cols,
+        minXs,
+        maxXs,
+        minYs,
+        maxYs
+        ) =
+          ( unlift input ::
+              ( Acc (Vector Int32),
+                Acc (Vector Float),
+                Acc (Vector Float),
+                Acc (Vector Float),
+                Acc (Vector Float),
+                Acc (Vector Float),
+                Acc (Vector Word32),
+                Acc (Vector Float),
+                Acc (Vector Float),
+                Acc (Vector Float),
+                Acc (Vector Float)
+              )
+          )
    in A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
         let Z :. y :. x = unlift ix :: Z :. Exp Int :. Exp Int
             px = A.fromIntegral x
@@ -92,7 +183,9 @@ renderAcc input =
             count = A.size tags
             initial = lift (A.constant 0 :: Exp Int, A.constant 0xFF000000 :: Exp Word32)
 
-            wcond st = let (i, _) = unlift st :: (Exp Int, Exp Word32) in i A.< count
+            wcond st =
+              let (i, _) = unlift st :: (Exp Int, Exp Word32)
+               in i A.< count
 
             body st =
               let (i, acc) = unlift st :: (Exp Int, Exp Word32)
@@ -104,21 +197,22 @@ renderAcc input =
                   s = ss A.!! i
                   col = cols A.!! i
 
-                  minX = (tag A.== circleTag) ? (x1 - s, A.min x1 x2 - s)
-                  maxX = (tag A.== circleTag) ? (x1 + s, A.max x1 x2 + s)
-                  minY = (tag A.== circleTag) ? (y1 - s, A.min y1 y2 - s)
-                  maxY = (tag A.== circleTag) ? (y1 + s, A.max y1 y2 + s)
+                  minX = minXs A.!! i
+                  maxX = maxXs A.!! i
+                  minY = minYs A.!! i
+                  maxY = maxYs A.!! i
 
                   inBox = px A.>= minX A.&& px A.<= maxX A.&& py A.>= minY A.&& py A.<= maxY
 
                   dxp = px - x1
                   dyp = py - y1
+                  s2 = s * s
 
                   isHit =
                     inBox
                       A.&& ( (tag A.== circleTag)
-                               ? ( (dxp * dxp) + (dyp * dyp) A.< s * s,
-                                   distToSegmentSq px py x1 y1 x2 y2 A.< s
+                               ? ( (dxp * dxp) + (dyp * dyp) A.< s2,
+                                   distToSegmentSq px py x1 y1 x2 y2 A.< s2
                                  )
                            )
 
@@ -126,20 +220,14 @@ renderAcc input =
                in lift (i + 1, newAcc)
          in A.snd (A.while wcond body initial)
 
+renderPipeline :: Acc Inputs -> Acc (Array DIM2 Word32)
+renderPipeline = renderAccWithBounds . precomputeBounds
+
 data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
     envFrameRef :: IORef Int,
-    envRender ::
-      ( Vector Int32,
-        Vector Float,
-        Vector Float,
-        Vector Float,
-        Vector Float,
-        Vector Float,
-        Vector Word32
-      ) ->
-      Array DIM2 Word32
+    envRender :: Inputs -> Array DIM2 Word32
   }
 
 tick :: Tick
@@ -223,7 +311,7 @@ runWindow tickRef = do
           { envWindow = window,
             envTex = tex,
             envFrameRef = frameRef,
-            envRender = CPU.run1 renderAcc
+            envRender = CPU.run1 renderPipeline
           }
 
   gameLoop env tickRef `finally` do
