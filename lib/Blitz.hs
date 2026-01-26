@@ -4,10 +4,8 @@ import Control.Concurrent (forkOS)
 import Control.Exception (finally)
 import Control.Monad
 import Data.Array.Accelerate as A
--- import Data.Array.Accelerate.Data.Bits qualified as ABits
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.Native as CPU
--- import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
 import Data.List qualified as L
 import Data.Vector.Storable qualified as VS
@@ -37,41 +35,36 @@ fbW, fbH :: Int
 fbW = 320
 fbH = 200
 
-tileSize :: Int
-tileSize = 16
-
-tilesW, tilesH :: Int
-tilesW = fbW `div` tileSize -- 320 / 16 = 20
-tilesH = fbH `div` tileSize -- 200 / 16 = 12.5 -> 13
-
-maxPrimsPerTile :: Int
-maxPrimsPerTile = 64
-
 -- (Tag, x1, y1, x2, y2, Size/Thickness, Color)
 type Primitive = (Int32, Float, Float, Float, Float, Float, Word32)
 
--- Plain values for the CPU
 circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
 lineTagVal = 1
 
--- GPU Expressions for the Shader
 circleTag, lineTag :: Exp Int32
 circleTag = A.constant circleTagVal
 lineTag = A.constant lineTagVal
 
--- | Distance from point (px, py) to line segment (x1, y1) -> (x2, y2)
+--------------------------------------------------------------------------------
+-- Rendering Logic
+--------------------------------------------------------------------------------
+
 distToSegment :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float
 distToSegment px py x1 y1 x2 y2 =
   let dx = x2 - x1
       dy = y2 - y1
       l2 = dx * dx + dy * dy
-      t = A.max 0 (A.min 1 (((px - x1) * dx + (py - y1) * dy) / l2))
-      projX = x1 + t * dx
-      projY = y1 + t * dy
-      dxp = px - projX
-      dyp = py - projY
-   in A.sqrt (dxp * dxp + dyp * dyp)
+   in A.cond
+        (l2 A.== 0)
+        (A.sqrt ((px - x1) * (px - x1) + (py - y1) * (py - y1)))
+        ( let t = A.max 0 (A.min 1 (((px - x1) * dx + (py - y1) * dy) / l2))
+              projX = x1 + t * dx
+              projY = y1 + t * dy
+              dxp = px - projX
+              dyp = py - projY
+           in A.sqrt (dxp * dxp + dyp * dyp)
+        )
 
 renderAcc :: Acc (Vector Primitive) -> Acc (Array DIM2 Word32)
 renderAcc primitives =
@@ -88,31 +81,24 @@ renderAcc primitives =
         body st =
           let (i, acc) = unlift st :: (Exp Int, Exp Word32)
               prim = primitives A.!! i
-              (tag, x1, y1, x2, y2, s, col) = unlift prim
+              (tag, x1, y1, x2, y2, s, col) = unlift prim :: (Exp Int32, Exp Float, Exp Float, Exp Float, Exp Float, Exp Float, Exp Word32)
 
-              -- 1. Calculate the Bounding Box
-              -- For circles, it's center +/- radius.
-              -- For lines, it's min/max of endpoints +/- thickness.
-              minX = A.cond (tag A.== circleTag) (x1 - s) (A.min x1 x2 - s)
-              maxX = A.cond (tag A.== circleTag) (x1 + s) (A.max x1 x2 + s)
-              minY = A.cond (tag A.== circleTag) (y1 - s) (A.min y1 y2 - s)
-              maxY = A.cond (tag A.== circleTag) (y1 + s) (A.max y1 y2 + s)
+              minX = (tag A.== circleTag) ? (x1 - s, A.min x1 x2 - s)
+              maxX = (tag A.== circleTag) ? (x1 + s, A.max x1 x2 + s)
+              minY = (tag A.== circleTag) ? (y1 - s, A.min y1 y2 - s)
+              maxY = (tag A.== circleTag) ? (y1 + s, A.max y1 y2 + s)
 
-              -- 2. The Short-Circuit Check
               inBox = px A.>= minX A.&& px A.<= maxX A.&& py A.>= minY A.&& py A.<= maxY
 
-              -- 3. Only run expensive math if inside the box
-              dxp = px - x1
-              dyp = py - y1
-
-              newAcc =
+              isHit =
                 inBox
-                  ? ( A.cond
-                        (tag A.== circleTag)
-                        ((dxp * dxp) + (dyp * dyp) A.< s * s ? (col, acc))
-                        (distToSegment px py x1 y1 x2 y2 A.< s ? (col, acc)),
-                      acc
-                    )
+                  A.&& ( (tag A.== circleTag)
+                           ? ( (px - x1) * (px - x1) + (py - y1) * (py - y1) A.< s * s,
+                               distToSegment px py x1 y1 x2 y2 A.< s
+                             )
+                       )
+
+              newAcc = isHit ? (col, acc)
            in lift (i + 1, newAcc)
      in A.snd (A.while wcond body initial)
 
@@ -129,22 +115,18 @@ tick env = do
   modifyIORef' env.envFrameRef (+ 1)
   let frame = Prelude.fromIntegral f :: Float
 
-  -- Stress Test: Generate 500 primitives
   let numPrims = 500
-      rawScene = Prelude.map genPrim [1 .. numPrims]
+      rawScene = Prelude.map (genPrim frame) [1 .. numPrims]
 
-      genPrim i =
+      genPrim f2 i =
         let fi = Prelude.fromIntegral i
-            x = 160 + 140 * cos (frame / 30 + fi * 0.1)
-            y = 100 + 80 * sin (frame / 50 + fi * 0.2)
-            col =
-              0xFF000000
-                + (Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF))
+            x = 160 + 140 * cos (f2 / 30 + fi * 0.1)
+            y = 100 + 80 * sin (f2 / 50 + fi * 0.2)
+            col = 0xFF000000 + (Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF))
          in if i `Prelude.rem` 2 Prelude.== 0
-              then (circleTagVal, x, y, 0, 0, 5 + 3 * sin (frame / 10 + fi), col)
+              then (circleTagVal, x, y, 0, 0, 5 + 3 * sin (f2 / 10 + fi), col)
               else (lineTagVal, 160, 100, x, y, 1, col)
 
-  -- The conversion logic remains the same
   let (t, x1, y1, x2, y2, s, c) = L.unzip7 rawScene
   let sceneVectors = ((((((((), VS.fromList t), VS.fromList x1), VS.fromList y1), VS.fromList x2), VS.fromList y2), VS.fromList s), VS.fromList c)
 
@@ -190,7 +172,6 @@ runWindow tickRef = do
   setConfigFlags [VsyncHint]
   window <- initWindow windowWidth windowHeight "blitz"
   setTargetFPS targetFramesPerSecond
-  -- toggleFullscreen
 
   img <- genImageColor fbW fbH black
   tex <- loadTextureFromImage img
@@ -206,10 +187,9 @@ runWindow tickRef = do
             envRender = CPU.run1 renderAcc
           }
 
-  gameLoop env tickRef
-    `finally` do
-      unloadTexture tex window
-      closeWindow (Just window)
+  gameLoop env tickRef `finally` do
+    unloadTexture tex window
+    closeWindow (Just window)
 
 gameLoop :: Env -> IORef Tick -> IO ()
 gameLoop env tickRef = do
