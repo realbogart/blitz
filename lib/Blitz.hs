@@ -1,14 +1,13 @@
 module Blitz where
 
 import Control.Concurrent (forkOS)
--- import Data.Array.Accelerate.LLVM.Native as CPU
-
 import Control.Exception (finally)
 import Control.Monad
 import Data.Array.Accelerate as A
 -- import Data.Array.Accelerate.Data.Bits qualified as ABits
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
-import Data.Array.Accelerate.LLVM.PTX as GPU
+import Data.Array.Accelerate.LLVM.Native as CPU
+-- import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
 import Data.List qualified as L
 import Data.Vector.Storable qualified as VS
@@ -41,9 +40,15 @@ fbH = 200
 -- (Tag, x1, y1, x2, y2, Size/Thickness, Color)
 type Primitive = (Int32, Float, Float, Float, Float, Float, Word32)
 
+-- Plain values for the CPU
+circleTagVal, lineTagVal :: Int32
+circleTagVal = 0
+lineTagVal = 1
+
+-- GPU Expressions for the Shader
 circleTag, lineTag :: Exp Int32
-circleTag = 0
-lineTag = 1
+circleTag = A.constant circleTagVal
+lineTag = A.constant lineTagVal
 
 -- | Distance from point (px, py) to line segment (x1, y1) -> (x2, y2)
 distToSegment :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float
@@ -57,20 +62,6 @@ distToSegment px py x1 y1 x2 y2 =
       dxp = px - projX
       dyp = py - projY
    in A.sqrt (dxp * dxp + dyp * dyp)
-
--- renderAcc :: Acc (Scalar Int) -> Acc (Array DIM2 Word32)
--- renderAcc t =
---   A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
---     let Z :. y :. x = unlift ix :: Z :. Exp Int :. Exp Int
---         f = the t
---         r = A.fromIntegral ((x + f) `A.rem` 256) :: Exp Word32
---         g = A.fromIntegral ((y + f) `A.rem` 256) :: Exp Word32
---         b = A.fromIntegral ((x + y) `A.rem` 256) :: Exp Word32
---         a = 255 :: Exp Word32
---      in (r `ABits.shiftL` 0)
---           ABits..|. (g `ABits.shiftL` 8)
---           ABits..|. (b `ABits.shiftL` 16)
---           ABits..|. (a `ABits.shiftL` 24)
 
 renderAcc :: Acc (Vector Primitive) -> Acc (Array DIM2 Word32)
 renderAcc primitives =
@@ -109,7 +100,6 @@ data Env = Env
     envTex :: Texture,
     envFrameRef :: IORef Int,
     envRender :: Array DIM1 Primitive -> Array DIM2 Word32
-    -- envRender :: Scalar Int -> Array DIM2 Word32,
   }
 
 tick :: Tick
@@ -118,33 +108,24 @@ tick env = do
   modifyIORef' env.envFrameRef (+ 1)
   let frame = Prelude.fromIntegral f :: Float
 
-  let rawScene :: [Primitive]
-      rawScene =
-        [ (0, 160, 90, 0, 0, 40 + 10 * sin (frame / 10), 0xFF444444),
-          (1, 20, 20, 300, 160, 2, 0xFF00FF00),
-          (0, 160 + 60 * cos (frame / 20), 90 + 30 * sin (frame / 20), 0, 0, 10, 0xFF0000FF)
-        ]
+  -- Stress Test: Generate 500 primitives
+  let numPrims = 500
+      rawScene = Prelude.map genPrim [1 .. numPrims]
 
+      genPrim i =
+        let fi = Prelude.fromIntegral i
+            x = 160 + 140 * cos (frame / 30 + fi * 0.1)
+            y = 100 + 80 * sin (frame / 50 + fi * 0.2)
+            col =
+              0xFF000000
+                + (Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF))
+         in if i `Prelude.rem` 2 Prelude.== 0
+              then (circleTagVal, x, y, 0, 0, 5 + 3 * sin (frame / 10 + fi), col)
+              else (lineTagVal, 160, 100, x, y, 1, col)
+
+  -- The conversion logic remains the same
   let (t, x1, y1, x2, y2, s, c) = L.unzip7 rawScene
-
-  -- This structure matches the recursive pair representation ((), a), b), c)...
-  -- Based on your error: Expected (((((((), Int32), Float), Float), Float), Float), Float), Word32)
-  let sceneVectors =
-        ( ( ( ( ( ( ( (),
-                      VS.fromList t
-                    ),
-                    VS.fromList x1
-                  ),
-                  VS.fromList y1
-                ),
-                VS.fromList x2
-              ),
-              VS.fromList y2
-            ),
-            VS.fromList s
-          ),
-          VS.fromList c
-        )
+  let sceneVectors = ((((((((), VS.fromList t), VS.fromList x1), VS.fromList y1), VS.fromList x2), VS.fromList y2), VS.fromList s), VS.fromList c)
 
   let accScene = AVS.fromVectors (Z :. L.length rawScene) sceneVectors
   let arr = env.envRender accScene
@@ -200,7 +181,7 @@ runWindow tickRef = do
           { envWindow = window,
             envTex = tex,
             envFrameRef = frameRef,
-            envRender = GPU.run1 renderAcc
+            envRender = CPU.run1 renderAcc
           }
 
   gameLoop env tickRef
