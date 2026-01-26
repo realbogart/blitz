@@ -37,6 +37,16 @@ fbW, fbH :: Int
 fbW = 320
 fbH = 200
 
+tileSize :: Int
+tileSize = 16
+
+tilesW, tilesH :: Int
+tilesW = fbW `div` tileSize -- 320 / 16 = 20
+tilesH = fbH `div` tileSize -- 200 / 16 = 12.5 -> 13
+
+maxPrimsPerTile :: Int
+maxPrimsPerTile = 64
+
 -- (Tag, x1, y1, x2, y2, Size/Thickness, Color)
 type Primitive = (Int32, Float, Float, Float, Float, Float, Word32)
 
@@ -73,25 +83,36 @@ renderAcc primitives =
         count = A.size primitives
         initial = lift (A.constant 0 :: Exp Int, A.constant 0xFF000000 :: Exp Word32)
 
-        wcond st =
-          let (i, _col) = unlift st :: (Exp Int, Exp Word32)
-           in i A.< count
+        wcond st = let (i, _) = unlift st :: (Exp Int, Exp Word32) in i A.< count
 
         body st =
           let (i, acc) = unlift st :: (Exp Int, Exp Word32)
               prim = primitives A.!! i
               (tag, x1, y1, x2, y2, s, col) = unlift prim
 
+              -- 1. Calculate the Bounding Box
+              -- For circles, it's center +/- radius.
+              -- For lines, it's min/max of endpoints +/- thickness.
+              minX = A.cond (tag A.== circleTag) (x1 - s) (A.min x1 x2 - s)
+              maxX = A.cond (tag A.== circleTag) (x1 + s) (A.max x1 x2 + s)
+              minY = A.cond (tag A.== circleTag) (y1 - s) (A.min y1 y2 - s)
+              maxY = A.cond (tag A.== circleTag) (y1 + s) (A.max y1 y2 + s)
+
+              -- 2. The Short-Circuit Check
+              inBox = px A.>= minX A.&& px A.<= maxX A.&& py A.>= minY A.&& py A.<= maxY
+
+              -- 3. Only run expensive math if inside the box
               dxp = px - x1
               dyp = py - y1
 
-              isHit =
-                A.cond
-                  (tag A.== circleTag)
-                  ((dxp * dxp) + (dyp * dyp) A.< s * s)
-                  (distToSegment px py x1 y1 x2 y2 A.< s)
-
-              newAcc = isHit ? (col, acc)
+              newAcc =
+                inBox
+                  ? ( A.cond
+                        (tag A.== circleTag)
+                        ((dxp * dxp) + (dyp * dyp) A.< s * s ? (col, acc))
+                        (distToSegment px py x1 y1 x2 y2 A.< s ? (col, acc)),
+                      acc
+                    )
            in lift (i + 1, newAcc)
      in A.snd (A.while wcond body initial)
 
