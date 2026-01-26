@@ -36,7 +36,7 @@ targetFramesPerSecond = 120
 
 fbW, fbH :: Int
 fbW = 320
-fbH = 180
+fbH = 200
 
 -- (Tag, x1, y1, x2, y2, Size/Thickness, Color)
 type Primitive = (Int32, Float, Float, Float, Float, Float, Word32)
@@ -82,14 +82,14 @@ renderAcc primitives =
         count = A.size primitives
         initial = lift (A.constant 0 :: Exp Int, A.constant 0xFF000000 :: Exp Word32)
 
-        cond st =
+        wcond st =
           let (i, _col) = unlift st :: (Exp Int, Exp Word32)
            in i A.< count
 
         body st =
           let (i, acc) = unlift st :: (Exp Int, Exp Word32)
               prim = primitives A.!! i
-              (tag, x1, y1, x2, y2, size, col) = unlift prim
+              (tag, x1, y1, x2, y2, s, col) = unlift prim
 
               dxp = px - x1
               dyp = py - y1
@@ -97,12 +97,12 @@ renderAcc primitives =
               isHit =
                 A.cond
                   (tag A.== circleTag)
-                  ((dxp * dxp) + (dyp * dyp) A.< size * size)
-                  (distToSegment px py x1 y1 x2 y2 A.< size)
+                  ((dxp * dxp) + (dyp * dyp) A.< s * s)
+                  (distToSegment px py x1 y1 x2 y2 A.< s)
 
               newAcc = isHit ? (col, acc)
            in lift (i + 1, newAcc)
-     in A.snd (A.while cond body initial)
+     in A.snd (A.while wcond body initial)
 
 data Env = Env
   { envWindow :: WindowResources,
