@@ -8,10 +8,8 @@ import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.Native as CPU
 -- import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
-import Data.Int (Int32)
 import Data.Vector.Storable qualified as VS
 import Data.Vector.Storable.Mutable qualified as VSM
-import Data.Word (Word32)
 import Foreign.Ptr (castPtr)
 import Foreign.Store qualified as FS
 import Raylib.Core
