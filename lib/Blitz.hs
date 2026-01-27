@@ -8,8 +8,10 @@ import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.Native as CPU
 -- import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
+import Data.Int (Int32)
 import Data.Vector.Storable qualified as VS
 import Data.Vector.Storable.Mutable qualified as VSM
+import Data.Word (Word32)
 import Foreign.Ptr (castPtr)
 import Foreign.Store qualified as FS
 import Raylib.Core
@@ -81,7 +83,6 @@ precomputeBounds input =
       sh = A.index1 (A.size tags)
       isCircle i = tags A.!! i A.== A.constant circleTagVal
       calc i = (x1s A.!! i, y1s A.!! i, x2s A.!! i, y2s A.!! i, ss A.!! i)
-
       minXs = A.generate sh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircle i ? (x1 - s, A.min x1 x2 - s)
       maxXs = A.generate sh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircle i ? (x1 + s, A.max x1 x2 + s)
       minYs = A.generate sh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircle i ? (y1 - s, A.min y1 y2 - s)
@@ -142,22 +143,25 @@ tick env = do
   modifyIORef' env.envFrameRef (+ 1)
   let frame = Prelude.fromIntegral f :: Float
 
-  forM_ [0 .. numPrims - 1] $ \j -> do
-    let fi = Prelude.fromIntegral (j + 1)
-        pxAt = 160 + 140 * cos (frame / 30 + fi * 0.1)
-        pyAt = 100 + 80 * sin (frame / 50 + fi * 0.2)
-        isCircle = (j + 1) `Prelude.rem` 2 Prelude.== 0
-        colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
+  let update i
+        | i Prelude.== numPrims = return ()
+        | otherwise = do
+            let fi = Prelude.fromIntegral (i + 1)
+                pxAt = 160 + 140 * cos (frame / 30 + fi * 0.1)
+                pyAt = 100 + 80 * sin (frame / 50 + fi * 0.2)
+                isCircle = (i + 1) `Prelude.rem` 2 Prelude.== 0
+                colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
 
-    VSM.unsafeWrite env.mTags j (if isCircle then circleTagVal else lineTagVal)
-    VSM.unsafeWrite env.mX1s j (if isCircle then pxAt else 160)
-    VSM.unsafeWrite env.mY1s j (if isCircle then pyAt else 100)
-    VSM.unsafeWrite env.mX2s j (if isCircle then 0 else pxAt)
-    VSM.unsafeWrite env.mY2s j (if isCircle then 0 else pyAt)
-    VSM.unsafeWrite env.mSizes j (if isCircle then 5 + 3 * sin (frame / 10 + fi) else 1)
-    VSM.unsafeWrite env.mColors j colAt
+            VSM.unsafeWrite env.mTags i (if isCircle then circleTagVal else lineTagVal)
+            VSM.unsafeWrite env.mX1s i (if isCircle then pxAt else 160)
+            VSM.unsafeWrite env.mY1s i (if isCircle then pyAt else 100)
+            VSM.unsafeWrite env.mX2s i (if isCircle then 0 else pxAt)
+            VSM.unsafeWrite env.mY2s i (if isCircle then 0 else pyAt)
+            VSM.unsafeWrite env.mSizes i (if isCircle then 5 + 3 * sin (frame / 10 + fi) else 1)
+            VSM.unsafeWrite env.mColors i colAt
+            update (i + 1)
+  update 0
 
-  -- Freeze vectors (O(1) reference) and pass to Accelerate
   shTags <- VS.unsafeFreeze env.mTags
   shX1s <- VS.unsafeFreeze env.mX1s
   shY1s <- VS.unsafeFreeze env.mY1s
@@ -225,6 +229,7 @@ runWindow tickRef = do
 
   frameRef <- newIORef (0 :: Int)
 
+  -- Pre-allocate mutable vectors
   tagsV <- VSM.new numPrims
   x1sV <- VSM.new numPrims
   y1sV <- VSM.new numPrims
