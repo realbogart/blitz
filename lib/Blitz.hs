@@ -300,13 +300,13 @@ tick env = do
 
       circleData =
         [ (cx, cy, sz, col, idx)
-        | (idx, (tag, cx, cy, _, _, sz, col)) <- indexedScene,
-          tag Prelude.== circleTagVal
+          | (idx, (tag, cx, cy, _, _, sz, col)) <- indexedScene,
+            tag Prelude.== circleTagVal
         ]
       lineData =
         [ (lx1, ly1, lx2, ly2, sz, col, idx)
-        | (idx, (tag, lx1, ly1, lx2, ly2, sz, col)) <- indexedScene,
-          tag Prelude.== lineTagVal
+          | (idx, (tag, lx1, ly1, lx2, ly2, sz, col)) <- indexedScene,
+            tag Prelude.== lineTagVal
         ]
 
       (cXs, cYs, cRs, cCols, cIdxs) = L.unzip5 circleData

@@ -1,7 +1,7 @@
 module Main where
 
-import Criterion.Main
 import Blitz qualified
+import Criterion.Main
 
 -- Example benchmarks for common operations
 main :: IO ()
