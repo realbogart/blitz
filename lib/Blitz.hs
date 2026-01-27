@@ -39,6 +39,13 @@ fbH = 200
 numPrims :: Int
 numPrims = 500
 
+tileW, tileH, tilesX, tilesY, numTiles :: Int
+tileW = 16
+tileH = 16
+tilesX = (fbW + tileW - 1) `Prelude.div` tileW
+tilesY = (fbH + tileH - 1) `Prelude.div` tileH
+numTiles = tilesX * tilesY
+
 circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
 lineTagVal = 1
@@ -63,12 +70,11 @@ distToSegmentSq px py x1 y1 x2 y2 =
 
 type Inputs = (Vector Int32, Vector Float, Vector Float, Vector Float, Vector Float, Vector Float, Vector Word32)
 
-type InputsWithBounds = (Vector Int32, Vector Float, Vector Float, Vector Float, Vector Float, Vector Float, Vector Word32, Vector Float, Vector Float, Vector Float, Vector Float)
-
-precomputeBounds :: Acc Inputs -> Acc InputsWithBounds
-precomputeBounds input =
-  let (tags, x1s, y1s, x2s, y2s, ss, cols) =
-        ( unlift input ::
+renderPipeline :: Acc Inputs -> Acc (Array DIM2 Word32)
+renderPipeline input =
+  let -- Unpack inputs
+      (tags, x1s, y1s, x2s, y2s, ss, cols) =
+        ( A.unlift input ::
             ( Acc (Vector Int32),
               Acc (Vector Float),
               Acc (Vector Float),
@@ -78,35 +84,84 @@ precomputeBounds input =
               Acc (Vector Word32)
             )
         )
-      sh = A.index1 (A.size tags)
-      isCircle i = tags A.!! i A.== A.constant circleTagVal
-      calc i = (x1s A.!! i, y1s A.!! i, x2s A.!! i, y2s A.!! i, ss A.!! i)
-      minXs = A.generate sh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircle i ? (x1 - s, A.min x1 x2 - s)
-      maxXs = A.generate sh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircle i ? (x1 + s, A.max x1 x2 + s)
-      minYs = A.generate sh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircle i ? (y1 - s, A.min y1 y2 - s)
-      maxYs = A.generate sh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircle i ? (y1 + s, A.max y1 y2 + s)
-   in A.lift (tags, x1s, y1s, x2s, y2s, ss, cols, minXs, maxXs, minYs, maxYs)
 
-renderAccWithBounds :: Acc InputsWithBounds -> Acc (Array DIM2 Word32)
-renderAccWithBounds input =
-  let (tags, x1s, y1s, x2s, y2s, ss, cols, minXs, maxXs, minYs, maxYs) = unlift input
-      count = A.size tags
-   in A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
+      -- Precompute bounding boxes
+      primSh = A.index1 (A.size tags)
+      isCircleAt i = tags A.!! i A.== A.constant circleTagVal
+      calc i = (x1s A.!! i, y1s A.!! i, x2s A.!! i, y2s A.!! i, ss A.!! i)
+      minXs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircleAt i ? (x1 - s, A.min x1 x2 - s)
+      maxXs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircleAt i ? (x1 + s, A.max x1 x2 + s)
+      minYs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircleAt i ? (y1 - s, A.min y1 y2 - s)
+      maxYs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircleAt i ? (y1 + s, A.max y1 y2 + s)
+
+      -- Overlap matrix: (numTiles, numPrims) — 1 if prim's bbox overlaps tile, 0 otherwise
+      overlapMatrix =
+        A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
+          let Z :. t :. p = A.unlift ix :: Z :. Exp Int :. Exp Int
+              tx = t `A.rem` A.constant tilesX
+              ty = t `A.quot` A.constant tilesX
+              tMinX = A.fromIntegral (tx * A.constant tileW) :: Exp Float
+              tMaxX = A.fromIntegral ((tx + 1) * A.constant tileW - 1) :: Exp Float
+              tMinY = A.fromIntegral (ty * A.constant tileH) :: Exp Float
+              tMaxY = A.fromIntegral ((ty + 1) * A.constant tileH - 1) :: Exp Float
+           in A.cond
+                ( maxXs A.!! p A.>= tMinX
+                    A.&& minXs A.!! p A.<= tMaxX
+                    A.&& maxYs A.!! p A.>= tMinY
+                    A.&& minYs A.!! p A.<= tMaxY
+                )
+                (1 :: Exp Int)
+                0
+
+      -- Inclusive prefix sum per tile row
+      inclusiveScan = A.scanl1 (+) overlapMatrix
+
+      -- Per-tile primitive counts
+      tileCounts = A.fold (+) 0 overlapMatrix
+
+      -- Compact tile bins via binary search on inclusive scan
+      -- For each (tile, slot), find the primitive index at that slot
+      -- by searching for smallest p where inclusiveScan[t][p] >= slot + 1
+      tileBins =
+        A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
+          let Z :. t :. slot = A.unlift ix :: Z :. Exp Int :. Exp Int
+              target = slot + 1
+              initial = A.lift (0 :: Exp Int, A.constant (numPrims - 1) :: Exp Int)
+              bsCond st = let (lo, hi) = A.unlift st :: (Exp Int, Exp Int) in lo A.< hi
+              bsBody st =
+                let (lo, hi) = A.unlift st :: (Exp Int, Exp Int)
+                    mid = (lo + hi) `A.quot` 2
+                    val = inclusiveScan A.! A.lift (Z :. t :. mid)
+                 in A.cond
+                      (val A.>= target)
+                      (A.lift (lo, mid))
+                      (A.lift (mid + 1, hi))
+              (result, _) = A.unlift (A.while bsCond bsBody initial) :: (Exp Int, Exp Int)
+           in result
+   in -- Pixel shader: iterate only primitives in this pixel's tile
+      A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
         let Z :. y :. x = A.unlift ix :: Z :. Exp Int :. Exp Int
-            px = A.fromIntegral x
-            py = A.fromIntegral y
-            initial = A.lift (count - 1, A.constant 0xFF000000 :: Exp Word32)
+            px = A.fromIntegral x :: Exp Float
+            py = A.fromIntegral y :: Exp Float
+            tileId = (y `A.quot` A.constant tileH) * A.constant tilesX + (x `A.quot` A.constant tileW)
+            tileCount = tileCounts A.! A.index1 tileId
+            initial = A.lift (tileCount - 1, A.constant 0xFF000000 :: Exp Word32)
             wcond st = let (i, _) = A.unlift st :: (Exp Int, Exp Word32) in i A.>= 0
             body st =
               let (i, acc) = A.unlift st :: (Exp Int, Exp Word32)
-                  tag = tags A.!! i
-                  lx1 = x1s A.!! i
-                  ly1 = y1s A.!! i
-                  lx2 = x2s A.!! i
-                  ly2 = y2s A.!! i
-                  s = ss A.!! i
-                  col = cols A.!! i
-                  inBox = px A.>= minXs A.!! i A.&& px A.<= maxXs A.!! i A.&& py A.>= minYs A.!! i A.&& py A.<= maxYs A.!! i
+                  primIdx = tileBins A.! A.lift (Z :. tileId :. i)
+                  tag = tags A.!! primIdx
+                  lx1 = x1s A.!! primIdx
+                  ly1 = y1s A.!! primIdx
+                  lx2 = x2s A.!! primIdx
+                  ly2 = y2s A.!! primIdx
+                  s = ss A.!! primIdx
+                  col = cols A.!! primIdx
+                  inBox =
+                    px A.>= minXs A.!! primIdx
+                      A.&& px A.<= maxXs A.!! primIdx
+                      A.&& py A.>= minYs A.!! primIdx
+                      A.&& py A.<= maxYs A.!! primIdx
                   isCircle = tag A.== A.constant circleTagVal
                   ddx = px - lx1
                   ddy = py - ly1
@@ -117,9 +172,6 @@ renderAccWithBounds input =
                   newI = isHit ? (A.constant (-1), i - 1)
                in A.lift (newI, newAcc)
          in A.snd (A.while wcond body initial)
-
-renderPipeline :: Acc Inputs -> Acc (Array DIM2 Word32)
-renderPipeline = renderAccWithBounds . precomputeBounds
 
 data Env = Env
   { envWindow :: WindowResources,
