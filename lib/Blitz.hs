@@ -9,6 +9,7 @@ import Data.Array.Accelerate.LLVM.Native as CPU
 -- import Data.Array.Accelerate.LLVM.PTX as GPU
 import Data.IORef
 import Data.Vector.Storable qualified as VS
+import Data.Vector.Storable.Mutable qualified as VSM
 import Foreign.Ptr (castPtr)
 import Foreign.Store qualified as FS
 import Raylib.Core
@@ -35,18 +36,14 @@ fbW, fbH :: Int
 fbW = 320
 fbH = 200
 
+numPrims :: Int
+numPrims = 500
+
 circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
 lineTagVal = 1
 
-distToSegmentSq ::
-  Exp Float ->
-  Exp Float ->
-  Exp Float ->
-  Exp Float ->
-  Exp Float ->
-  Exp Float ->
-  Exp Float
+distToSegmentSq :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float
 distToSegmentSq px py x1 y1 x2 y2 =
   let dx = x2 - x1
       dy = y2 - y1
@@ -64,33 +61,10 @@ distToSegmentSq px py x1 y1 x2 y2 =
            in dxp * dxp + dyp * dyp
         )
 
--- Primitive inputs: (tag, x1/cx, y1/cy, x2, y2, size/radius, color)
-type Inputs =
-  ( Vector Int32,
-    Vector Float,
-    Vector Float,
-    Vector Float,
-    Vector Float,
-    Vector Float,
-    Vector Word32
-  )
+type Inputs = (Vector Int32, Vector Float, Vector Float, Vector Float, Vector Float, Vector Float, Vector Word32)
 
--- With precomputed bounding boxes
-type InputsWithBounds =
-  ( Vector Int32,
-    Vector Float,
-    Vector Float,
-    Vector Float,
-    Vector Float,
-    Vector Float,
-    Vector Word32,
-    Vector Float,
-    Vector Float,
-    Vector Float,
-    Vector Float
-  )
+type InputsWithBounds = (Vector Int32, Vector Float, Vector Float, Vector Float, Vector Float, Vector Float, Vector Word32, Vector Float, Vector Float, Vector Float, Vector Float)
 
--- | Precompute axis-aligned bounding boxes for all primitives.
 precomputeBounds :: Acc Inputs -> Acc InputsWithBounds
 precomputeBounds input =
   let (tags, x1s, y1s, x2s, y2s, ss, cols) =
@@ -104,77 +78,26 @@ precomputeBounds input =
               Acc (Vector Word32)
             )
         )
-      count = A.size tags
-      sh = A.index1 count
-
+      sh = A.index1 (A.size tags)
       isCircle i = tags A.!! i A.== A.constant circleTagVal
+      calc i = (x1s A.!! i, y1s A.!! i, x2s A.!! i, y2s A.!! i, ss A.!! i)
 
-      minXs =
-        A.generate sh $ \ix ->
-          let i = A.unindex1 ix
-              x1 = x1s A.!! i
-              x2 = x2s A.!! i
-              s = ss A.!! i
-           in isCircle i ? (x1 - s, A.min x1 x2 - s)
-
-      maxXs =
-        A.generate sh $ \ix ->
-          let i = A.unindex1 ix
-              x1 = x1s A.!! i
-              x2 = x2s A.!! i
-              s = ss A.!! i
-           in isCircle i ? (x1 + s, A.max x1 x2 + s)
-
-      minYs =
-        A.generate sh $ \ix ->
-          let i = A.unindex1 ix
-              y1 = y1s A.!! i
-              y2 = y2s A.!! i
-              s = ss A.!! i
-           in isCircle i ? (y1 - s, A.min y1 y2 - s)
-
-      maxYs =
-        A.generate sh $ \ix ->
-          let i = A.unindex1 ix
-              y1 = y1s A.!! i
-              y2 = y2s A.!! i
-              s = ss A.!! i
-           in isCircle i ? (y1 + s, A.max y1 y2 + s)
+      minXs = A.generate sh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircle i ? (x1 - s, A.min x1 x2 - s)
+      maxXs = A.generate sh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircle i ? (x1 + s, A.max x1 x2 + s)
+      minYs = A.generate sh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircle i ? (y1 - s, A.min y1 y2 - s)
+      maxYs = A.generate sh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircle i ? (y1 + s, A.max y1 y2 + s)
    in A.lift (tags, x1s, y1s, x2s, y2s, ss, cols, minXs, maxXs, minYs, maxYs)
 
--- | Single-pass renderer with reverse iteration and early exit.
--- Iterates from last primitive to first per pixel, stopping on first hit.
--- Last primitive wins (correct draw order), with minimal work for covered pixels.
 renderAccWithBounds :: Acc InputsWithBounds -> Acc (Array DIM2 Word32)
 renderAccWithBounds input =
-  let (tags, x1s, y1s, x2s, y2s, ss, cols, minXs, maxXs, minYs, maxYs) =
-        ( unlift input ::
-            ( Acc (Vector Int32),
-              Acc (Vector Float),
-              Acc (Vector Float),
-              Acc (Vector Float),
-              Acc (Vector Float),
-              Acc (Vector Float),
-              Acc (Vector Word32),
-              Acc (Vector Float),
-              Acc (Vector Float),
-              Acc (Vector Float),
-              Acc (Vector Float)
-            )
-        )
+  let (tags, x1s, y1s, x2s, y2s, ss, cols, minXs, maxXs, minYs, maxYs) = unlift input
       count = A.size tags
    in A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
         let Z :. y :. x = A.unlift ix :: Z :. Exp Int :. Exp Int
-            px = A.fromIntegral x :: Exp Float
-            py = A.fromIntegral y :: Exp Float
-
-            -- Start from the last primitive (highest index), iterate backwards
+            px = A.fromIntegral x
+            py = A.fromIntegral y
             initial = A.lift (count - 1, A.constant 0xFF000000 :: Exp Word32)
-
-            wcond st =
-              let (i, _) = A.unlift st :: (Exp Int, Exp Word32)
-               in i A.>= 0
-
+            wcond st = let (i, _) = A.unlift st :: (Exp Int, Exp Word32) in i A.>= 0
             body st =
               let (i, acc) = A.unlift st :: (Exp Int, Exp Word32)
                   tag = tags A.!! i
@@ -184,33 +107,18 @@ renderAccWithBounds input =
                   ly2 = y2s A.!! i
                   s = ss A.!! i
                   col = cols A.!! i
-
-                  bMinX = minXs A.!! i
-                  bMaxX = maxXs A.!! i
-                  bMinY = minYs A.!! i
-                  bMaxY = maxYs A.!! i
-
-                  inBox =
-                    px A.>= bMinX
-                      A.&& px A.<= bMaxX
-                      A.&& py A.>= bMinY
-                      A.&& py A.<= bMaxY
-
+                  inBox = px A.>= minXs A.!! i A.&& px A.<= maxXs A.!! i A.&& py A.>= minYs A.!! i A.&& py A.<= maxYs A.!! i
                   isCircle = tag A.== A.constant circleTagVal
                   ddx = px - lx1
                   ddy = py - ly1
                   circleHit = ddx * ddx + ddy * ddy A.< s * s
                   lineHit = distToSegmentSq px py lx1 ly1 lx2 ly2 A.< s * s
-
                   isHit = inBox A.&& (isCircle ? (circleHit, lineHit))
-
                   newAcc = isHit ? (col, acc)
-                  -- Sentinel: set i = -1 on hit to force early exit
                   newI = isHit ? (A.constant (-1), i - 1)
                in A.lift (newI, newAcc)
          in A.snd (A.while wcond body initial)
 
--- | Render pipeline: precompute bounds, then single-pass reverse iteration.
 renderPipeline :: Acc Inputs -> Acc (Array DIM2 Word32)
 renderPipeline = renderAccWithBounds . precomputeBounds
 
@@ -218,7 +126,14 @@ data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
     envFrameRef :: IORef Int,
-    envRender :: Inputs -> Array DIM2 Word32
+    envRender :: Inputs -> Array DIM2 Word32,
+    mTags :: VSM.IOVector Int32,
+    mX1s :: VSM.IOVector Float,
+    mY1s :: VSM.IOVector Float,
+    mX2s :: VSM.IOVector Float,
+    mY2s :: VSM.IOVector Float,
+    mSizes :: VSM.IOVector Float,
+    mColors :: VSM.IOVector Word32
   }
 
 tick :: Tick
@@ -227,52 +142,39 @@ tick env = do
   modifyIORef' env.envFrameRef (+ 1)
   let frame = Prelude.fromIntegral f :: Float
 
-  let numPrims = 500
+  forM_ [0 .. numPrims - 1] $ \j -> do
+    let fi = Prelude.fromIntegral (j + 1)
+        pxAt = 160 + 140 * cos (frame / 30 + fi * 0.1)
+        pyAt = 100 + 80 * sin (frame / 50 + fi * 0.2)
+        isCircle = (j + 1) `Prelude.rem` 2 Prelude.== 0
+        colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
 
-      fi :: Int -> Float
-      fi j = Prelude.fromIntegral (j + 1)
+    VSM.unsafeWrite env.mTags j (if isCircle then circleTagVal else lineTagVal)
+    VSM.unsafeWrite env.mX1s j (if isCircle then pxAt else 160)
+    VSM.unsafeWrite env.mY1s j (if isCircle then pyAt else 100)
+    VSM.unsafeWrite env.mX2s j (if isCircle then 0 else pxAt)
+    VSM.unsafeWrite env.mY2s j (if isCircle then 0 else pyAt)
+    VSM.unsafeWrite env.mSizes j (if isCircle then 5 + 3 * sin (frame / 10 + fi) else 1)
+    VSM.unsafeWrite env.mColors j colAt
 
-      pxAt :: Int -> Float
-      pxAt j = 160 + 140 * cos (frame / 30 + fi j * 0.1)
+  -- Freeze vectors (O(1) reference) and pass to Accelerate
+  shTags <- VS.unsafeFreeze env.mTags
+  shX1s <- VS.unsafeFreeze env.mX1s
+  shY1s <- VS.unsafeFreeze env.mY1s
+  shX2s <- VS.unsafeFreeze env.mX2s
+  shY2s <- VS.unsafeFreeze env.mY2s
+  shSizes <- VS.unsafeFreeze env.mSizes
+  shColors <- VS.unsafeFreeze env.mColors
 
-      pyAt :: Int -> Float
-      pyAt j = 100 + 80 * sin (frame / 50 + fi j * 0.2)
-
-      isCircle :: Int -> Bool
-      isCircle j = (j + 1) `Prelude.rem` 2 Prelude.== 0
-
-      colAt :: Int -> Word32
-      colAt j = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi j * 12345) `Prelude.rem` (0x00FFFFFF :: Int))
-
-      tags = VS.generate numPrims $ \j ->
-        if isCircle j then circleTagVal else lineTagVal
-
-      x1s = VS.generate numPrims $ \j ->
-        if isCircle j then pxAt j else 160
-
-      y1s = VS.generate numPrims $ \j ->
-        if isCircle j then pyAt j else 100
-
-      x2s = VS.generate numPrims $ \j ->
-        if isCircle j then 0 else pxAt j
-
-      y2s = VS.generate numPrims $ \j ->
-        if isCircle j then 0 else pyAt j
-
-      szs = VS.generate numPrims $ \j ->
-        if isCircle j then 5 + 3 * sin (frame / 10 + fi j) else 1
-
-      clrs = VS.generate numPrims colAt
-
-      sh = Z :. numPrims
+  let sh = Z :. numPrims
       inputs =
-        ( AVS.fromVectors sh tags,
-          AVS.fromVectors sh x1s,
-          AVS.fromVectors sh y1s,
-          AVS.fromVectors sh x2s,
-          AVS.fromVectors sh y2s,
-          AVS.fromVectors sh szs,
-          AVS.fromVectors sh clrs
+        ( AVS.fromVectors sh shTags,
+          AVS.fromVectors sh shX1s,
+          AVS.fromVectors sh shY1s,
+          AVS.fromVectors sh shX2s,
+          AVS.fromVectors sh shY2s,
+          AVS.fromVectors sh shSizes,
+          AVS.fromVectors sh shColors
         )
 
   let arr = env.envRender inputs
@@ -323,12 +225,27 @@ runWindow tickRef = do
 
   frameRef <- newIORef (0 :: Int)
 
+  tagsV <- VSM.new numPrims
+  x1sV <- VSM.new numPrims
+  y1sV <- VSM.new numPrims
+  x2sV <- VSM.new numPrims
+  y2sV <- VSM.new numPrims
+  sizesV <- VSM.new numPrims
+  colorsV <- VSM.new numPrims
+
   let env =
         Env
           { envWindow = window,
             envTex = tex,
             envFrameRef = frameRef,
-            envRender = CPU.run1 renderPipeline
+            envRender = CPU.run1 renderPipeline,
+            mTags = tagsV,
+            mX1s = x1sV,
+            mY1s = y1sV,
+            mX2s = x2sV,
+            mY2s = y2sV,
+            mSizes = sizesV,
+            mColors = colorsV
           }
 
   gameLoop env tickRef `finally` do
