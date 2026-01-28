@@ -37,7 +37,7 @@ fbW = 320
 fbH = 200
 
 numPrims :: Int
-numPrims = 2000
+numPrims = 500
 
 tileW, tileH, tilesX, tilesY, numTiles :: Int
 tileW = 16
@@ -206,21 +206,31 @@ tick env = do
   modifyIORef' env.envFrameRef (+ 1)
   let frame = Prelude.fromIntegral f :: Float
 
+  -- Scattered small primitives instead of large star burst
   let update i
         | i Prelude.== numPrims = return ()
         | otherwise = do
             let fi = Prelude.fromIntegral (i + 1)
-                pxAt = 160 + 140 * cos (frame / 30 + fi * 0.1)
-                pyAt = 100 + 80 * sin (frame / 50 + fi * 0.2)
-                isCircle = (i + 1) `Prelude.rem` 2 Prelude.== 0
+                -- Pseudo-random but deterministic positions using the index
+                baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` fbW)
+                baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` fbH)
+                -- Small oscillation around base position
+                pxAt = baseX + 10 * cos (frame / 40 + fi * 0.3)
+                pyAt = baseY + 10 * sin (frame / 35 + fi * 0.4)
+                isCircle = (i + 1) `Prelude.rem` 3 Prelude./= 0 -- 2/3 circles, 1/3 lines
                 colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
+                -- Short lines: 15-25 pixels long
+                lineLen = 15 + 10 * sin (fi * 0.5)
+                lineAngle = frame / 60 + fi * 0.7
+                lx2 = pxAt + lineLen * cos lineAngle
+                ly2 = pyAt + lineLen * sin lineAngle
 
             VSM.unsafeWrite env.mTags i (if isCircle then circleTagVal else lineTagVal)
-            VSM.unsafeWrite env.mX1s i (if isCircle then pxAt else 160)
-            VSM.unsafeWrite env.mY1s i (if isCircle then pyAt else 100)
-            VSM.unsafeWrite env.mX2s i (if isCircle then 0 else pxAt)
-            VSM.unsafeWrite env.mY2s i (if isCircle then 0 else pyAt)
-            VSM.unsafeWrite env.mSizes i (if isCircle then 5 + 3 * sin (frame / 10 + fi) else 1)
+            VSM.unsafeWrite env.mX1s i pxAt
+            VSM.unsafeWrite env.mY1s i pyAt
+            VSM.unsafeWrite env.mX2s i (if isCircle then 0 else lx2)
+            VSM.unsafeWrite env.mY2s i (if isCircle then 0 else ly2)
+            VSM.unsafeWrite env.mSizes i (if isCircle then 3 + 2 * sin (frame / 15 + fi) else 1)
             VSM.unsafeWrite env.mColors i colAt
             update (i + 1)
   update 0
