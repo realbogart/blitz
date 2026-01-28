@@ -1,5 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
-
 module Blitz.Draw
   ( DrawM,
     runDrawFrame,
