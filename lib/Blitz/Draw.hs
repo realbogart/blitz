@@ -19,7 +19,6 @@ data DrawEnv = DrawEnv
     y2s :: VSM.IOVector Float,
     sizes :: VSM.IOVector Float,
     colors :: VSM.IOVector Word32,
-    maxPrims :: Int,
     circleTag :: Int32,
     lineTag :: Int32
   }
@@ -79,7 +78,6 @@ runDrawFrame !tagsV !x1sV !y1sV !x2sV !y2sV !sizesV !colorsV !numPrims !circleTa
             y2s = y2sV,
             sizes = sizesV,
             colors = colorsV,
-            maxPrims = numPrims,
             circleTag = circleTagVal,
             lineTag = lineTagVal
           }
@@ -110,33 +108,27 @@ padDisabled !env !start !end = go start
 -- | Draw a circle at (x, y) with radius r and color col
 {-# INLINE drawCircle #-}
 drawCircle :: Float -> Float -> Float -> Word32 -> DrawM ()
-drawCircle !x !y !r !col = DrawM $ \env !i ->
-  if i < env.maxPrims
-    then do
-      VSM.unsafeWrite env.tags i env.circleTag
-      VSM.unsafeWrite env.x1s i x
-      VSM.unsafeWrite env.y1s i y
-      VSM.unsafeWrite env.x2s i 0
-      VSM.unsafeWrite env.y2s i 0
-      VSM.unsafeWrite env.sizes i r
-      VSM.unsafeWrite env.colors i col
-      let !i' = i + 1
-      pure (i', ())
-    else pure (i, ())
+drawCircle !x !y !r !col = DrawM $ \env !i -> do
+  VSM.unsafeWrite env.tags i env.circleTag
+  VSM.unsafeWrite env.x1s i x
+  VSM.unsafeWrite env.y1s i y
+  VSM.unsafeWrite env.x2s i 0
+  VSM.unsafeWrite env.y2s i 0
+  VSM.unsafeWrite env.sizes i r
+  VSM.unsafeWrite env.colors i col
+  let !i' = i + 1
+  pure (i', ())
 
 -- | Draw a line from (x1, y1) to (x2, y2) with thickness and color
 {-# INLINE drawLine #-}
 drawLine :: Float -> Float -> Float -> Float -> Float -> Word32 -> DrawM ()
-drawLine !lx1 !ly1 !lx2 !ly2 !thickness !col = DrawM $ \env !i ->
-  if i < env.maxPrims
-    then do
-      VSM.unsafeWrite env.tags i env.lineTag
-      VSM.unsafeWrite env.x1s i lx1
-      VSM.unsafeWrite env.y1s i ly1
-      VSM.unsafeWrite env.x2s i lx2
-      VSM.unsafeWrite env.y2s i ly2
-      VSM.unsafeWrite env.sizes i thickness
-      VSM.unsafeWrite env.colors i col
-      let !i' = i + 1
-      pure (i', ())
-    else pure (i, ())
+drawLine !lx1 !ly1 !lx2 !ly2 !thickness !col = DrawM $ \env !i -> do
+  VSM.unsafeWrite env.tags i env.lineTag
+  VSM.unsafeWrite env.x1s i lx1
+  VSM.unsafeWrite env.y1s i ly1
+  VSM.unsafeWrite env.x2s i lx2
+  VSM.unsafeWrite env.y2s i ly2
+  VSM.unsafeWrite env.sizes i thickness
+  VSM.unsafeWrite env.colors i col
+  let !i' = i + 1
+  pure (i', ())
