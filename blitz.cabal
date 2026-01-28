@@ -20,7 +20,7 @@ common warnings
                       -Wno-unsafe -Wno-missing-local-signatures -Wno-missing-kind-signatures
                       -Wno-all-missed-specialisations -Wno-missed-specialisations -Wno-ambiguous-fields
                       -Wno-missing-deriving-strategies -Wno-prepositive-qualified-module
-                      -Wno-unused-top-binds -threaded
+                      -Wno-unused-top-binds -threaded -Wno-missing-role-annotations
 
 common extensions
     default-extensions: OverloadedStrings,
@@ -32,13 +32,15 @@ common extensions
                         DataKinds,
                         TypeFamilies,
                         RecordWildCards,
-                        DeriveDataTypeable
+                        DeriveDataTypeable,
+                        DerivingStrategies
 
 library
     import:           warnings
     import:           extensions
     hs-source-dirs:   lib
     exposed-modules:  Blitz
+    other-modules:    Blitz.Draw
     build-depends:    base,
                       text,
                       bytestring,
@@ -48,6 +50,7 @@ library
                       filepath,
                       stm,
                       transformers,
+                      mtl,
                       binary,
                       foreign-store,
                       h-raylib,

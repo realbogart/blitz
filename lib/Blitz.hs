@@ -1,5 +1,6 @@
 module Blitz where
 
+import Blitz.Draw
 import Control.Concurrent (forkOS)
 import Control.Exception (finally)
 import Control.Monad
@@ -234,33 +235,20 @@ tick env = do
   let frame = Prelude.fromIntegral f :: Float
 
   -- Scattered small primitives instead of large star burst (skip when paused)
-  let update i
-        | i Prelude.== numPrims = return ()
-        | otherwise = do
-            let fi = Prelude.fromIntegral (i + 1)
-                -- Pseudo-random but deterministic positions using the index
-                baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` fbW)
-                baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` fbH)
-                -- Small oscillation around base position
-                pxAt = baseX + 10 * cos (frame / 40 + fi * 0.3)
-                pyAt = baseY + 10 * sin (frame / 35 + fi * 0.4)
-                isCircle = (i + 1) `Prelude.rem` 3 Prelude./= 0 -- 2/3 circles, 1/3 lines
-                colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
-                -- Short lines: 15-25 pixels long
-                lineLen = 15 + 10 * sin (fi * 0.5)
-                lineAngle = frame / 60 + fi * 0.7
-                lx2 = pxAt + lineLen * cos lineAngle
-                ly2 = pyAt + lineLen * sin lineAngle
-
-            VSM.unsafeWrite env.mTags i (if isCircle then circleTagVal else lineTagVal)
-            VSM.unsafeWrite env.mX1s i pxAt
-            VSM.unsafeWrite env.mY1s i pyAt
-            VSM.unsafeWrite env.mX2s i (if isCircle then 0 else lx2)
-            VSM.unsafeWrite env.mY2s i (if isCircle then 0 else ly2)
-            VSM.unsafeWrite env.mSizes i (if isCircle then 3 + 2 * sin (frame / 15 + fi) else 1)
-            VSM.unsafeWrite env.mColors i colAt
-            update (i + 1)
-  unless paused $ update 0
+  unless paused $
+    void $
+      runDrawFrame
+        env.mTags
+        env.mX1s
+        env.mY1s
+        env.mX2s
+        env.mY2s
+        env.mSizes
+        env.mColors
+        numPrims
+        circleTagVal
+        lineTagVal
+        (drawScene frame)
 
   shTags <- VS.unsafeFreeze env.mTags
   shX1s <- VS.unsafeFreeze env.mX1s
@@ -293,6 +281,33 @@ tick env = do
   drawTexturePro env.envTex src dst (Vector2 0 0) 0 white
   drawFPS 10 10
   endDrawing
+
+-- | Draw the scene with scattered small primitives
+drawScene :: Float -> DrawM ()
+drawScene frame = go 0
+  where
+    go !i
+      | i Prelude.== numPrims = pure ()
+      | otherwise = do
+          let fi = Prelude.fromIntegral (i + 1) :: Float
+              -- Pseudo-random but deterministic positions using the index
+              baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` fbW)
+              baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` fbH)
+              -- Small oscillation around base position
+              pxAt = baseX + 10 * cos (frame / 40 + fi * 0.3)
+              pyAt = baseY + 10 * sin (frame / 35 + fi * 0.4)
+              isCircle = (i + 1) `Prelude.rem` 3 Prelude./= 0 -- 2/3 circles, 1/3 lines
+              colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
+          if isCircle
+            then drawCircle pxAt pyAt (3 + 2 * sin (frame / 15 + fi)) colAt
+            else do
+              -- Short lines: 15-25 pixels long
+              let lineLen = 15 + 10 * sin (fi * 0.5)
+                  lineAngle = frame / 60 + fi * 0.7
+                  lx2 = pxAt + lineLen * cos lineAngle
+                  ly2 = pyAt + lineLen * sin lineAngle
+              drawLine pxAt pyAt lx2 ly2 1 colAt
+          go (i + 1)
 
 main :: IO ()
 main = do
