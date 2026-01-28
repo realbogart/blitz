@@ -37,14 +37,15 @@ fbW = 320
 fbH = 200
 
 numPrims :: Int
-numPrims = 500
+numPrims = 2000
 
-tileW, tileH, tilesX, tilesY, numTiles :: Int
+tileW, tileH, tilesX, tilesY, numTiles, maxPrimsPerTile :: Int
 tileW = 16
 tileH = 16
 tilesX = (fbW + tileW - 1) `Prelude.div` tileW
 tilesY = (fbH + tileH - 1) `Prelude.div` tileH
 numTiles = tilesX * tilesY
+maxPrimsPerTile = 128 -- Cap bin size to reduce memory footprint
 
 circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
@@ -52,6 +53,7 @@ lineTagVal = 1
 
 -- Optimized line hit test: returns True if pixel is within threshold of line segment
 -- Avoids division by multiplying through
+{-# INLINE lineHitTest #-}
 lineHitTest :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Bool
 lineHitTest px py x1 y1 x2 y2 threshold =
   let dx = x2 - x1
@@ -95,16 +97,35 @@ renderPipeline input =
             )
         )
 
-      -- Precompute bounding boxes
+      -- Precompute bounding boxes as arrays (enables better memory access patterns)
       primSh = A.index1 (A.size tags)
       isCircleAt i = tags A.!! i A.== A.constant circleTagVal
-      calc i = (x1s A.!! i, y1s A.!! i, x2s A.!! i, y2s A.!! i, ss A.!! i)
-      minXs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircleAt i ? (x1 - s, A.min x1 x2 - s)
-      maxXs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (x1, _, x2, _, s) = calc i in isCircleAt i ? (x1 + s, A.max x1 x2 + s)
-      minYs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircleAt i ? (y1 - s, A.min y1 y2 - s)
-      maxYs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircleAt i ? (y1 + s, A.max y1 y2 + s)
+      minXs = A.generate primSh $ \ix ->
+        let i = A.unindex1 ix
+            x1 = x1s A.!! i
+            x2 = x2s A.!! i
+            s = ss A.!! i
+         in isCircleAt i ? (x1 - s, A.min x1 x2 - s)
+      maxXs = A.generate primSh $ \ix ->
+        let i = A.unindex1 ix
+            x1 = x1s A.!! i
+            x2 = x2s A.!! i
+            s = ss A.!! i
+         in isCircleAt i ? (x1 + s, A.max x1 x2 + s)
+      minYs = A.generate primSh $ \ix ->
+        let i = A.unindex1 ix
+            y1 = y1s A.!! i
+            y2 = y2s A.!! i
+            s = ss A.!! i
+         in isCircleAt i ? (y1 - s, A.min y1 y2 - s)
+      maxYs = A.generate primSh $ \ix ->
+        let i = A.unindex1 ix
+            y1 = y1s A.!! i
+            y2 = y2s A.!! i
+            s = ss A.!! i
+         in isCircleAt i ? (y1 + s, A.max y1 y2 + s)
 
-      -- Overlap matrix as Int: (numTiles, numPrims) — 1 if prim's bbox overlaps tile, 0 otherwise
+      -- Overlap matrix: (numTiles, numPrims) — 1 if prim's bbox overlaps tile, 0 otherwise
       overlapInt =
         A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
           let Z :. t :. p = A.unlift ix :: Z :. Exp Int :. Exp Int
@@ -124,14 +145,11 @@ renderPipeline input =
       -- Exclusive prefix sum: gives slot positions; fold gives tile counts
       T2 prefixSum tileCounts = A.scanl' (+) 0 overlapInt
 
-      -- Source array: each (tile, prim) position holds prim index
-      primIndices =
-        A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
-          let Z :. _ :. p = A.unlift ix :: Z :. Exp Int :. Exp Int
-           in p
+      -- Capped tile counts for bounded iteration
+      cappedTileCounts = A.map (A.min (A.constant maxPrimsPerTile)) tileCounts
 
-      -- Build compact tile bins via permute
-      defaultBins = A.fill (A.constant (Z :. numTiles :. numPrims)) (0 :: Exp Int)
+      -- Build compact tile bins via permute - CAPPED to maxPrimsPerTile
+      defaultBins = A.fill (A.constant (Z :. numTiles :. maxPrimsPerTile)) (0 :: Exp Int)
       tileBins =
         A.permute
           const
@@ -141,18 +159,21 @@ renderPipeline input =
                   overlap = overlapInt A.! ix
                   slot = prefixSum A.! ix
                in A.cond
-                    (overlap A.== 1)
+                    (overlap A.== 1 A.&& slot A.< A.constant maxPrimsPerTile)
                     (A.Just_ (A.lift (Z :. t :. slot)))
                     A.Nothing_
           )
-          primIndices
+          ( A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
+              let Z :. _ :. primIdx = A.unlift ix :: Z :. Exp Int :. Exp Int
+               in primIdx
+          )
    in -- Pixel shader: iterate only the compact bin for this tile
       A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
         let Z :. y :. x = A.unlift ix :: Z :. Exp Int :. Exp Int
             px = A.fromIntegral x :: Exp Float
             py = A.fromIntegral y :: Exp Float
             tileId = (y `A.quot` A.constant tileH) * A.constant tilesX + (x `A.quot` A.constant tileW)
-            tileCount = tileCounts A.! A.index1 tileId
+            tileCount = cappedTileCounts A.! A.index1 tileId
             initial = A.lift (tileCount - 1, A.constant 0xFF000000 :: Exp Word32)
             wcond st = let (i, _) = A.unlift st :: (Exp Int, Exp Word32) in i A.>= 0
             body st =
