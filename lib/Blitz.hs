@@ -37,7 +37,7 @@ fbW = 320
 fbH = 200
 
 numPrims :: Int
-numPrims = 800
+numPrims = 2000
 
 tileW, tileH, tilesX, tilesY, numTiles :: Int
 tileW = 16
@@ -94,8 +94,8 @@ renderPipeline input =
       minYs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircleAt i ? (y1 - s, A.min y1 y2 - s)
       maxYs = A.generate primSh $ \ix -> let i = A.unindex1 ix; (_, y1, _, y2, s) = calc i in isCircleAt i ? (y1 + s, A.max y1 y2 + s)
 
-      -- Overlap matrix: (numTiles, numPrims) — 1 if prim's bbox overlaps tile, 0 otherwise
-      overlapMatrix =
+      -- Overlap matrix as Int: (numTiles, numPrims) — 1 if prim's bbox overlaps tile, 0 otherwise
+      overlapInt =
         A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
           let Z :. t :. p = A.unlift ix :: Z :. Exp Int :. Exp Int
               tx = t `A.rem` A.constant tilesX
@@ -104,41 +104,40 @@ renderPipeline input =
               tMaxX = A.fromIntegral ((tx + 1) * A.constant tileW - 1) :: Exp Float
               tMinY = A.fromIntegral (ty * A.constant tileH) :: Exp Float
               tMaxY = A.fromIntegral ((ty + 1) * A.constant tileH - 1) :: Exp Float
-           in A.cond
-                ( maxXs A.!! p A.>= tMinX
-                    A.&& minXs A.!! p A.<= tMaxX
-                    A.&& maxYs A.!! p A.>= tMinY
-                    A.&& minYs A.!! p A.<= tMaxY
-                )
-                (1 :: Exp Int)
-                0
+              overlaps =
+                maxXs A.!! p A.>= tMinX
+                  A.&& minXs A.!! p A.<= tMaxX
+                  A.&& maxYs A.!! p A.>= tMinY
+                  A.&& minYs A.!! p A.<= tMaxY
+           in A.cond overlaps (1 :: Exp Int) 0
 
-      -- Inclusive prefix sum per tile row
-      inclusiveScan = A.scanl1 (+) overlapMatrix
+      -- Exclusive prefix sum: gives slot positions; fold gives tile counts
+      T2 prefixSum tileCounts = A.scanl' (+) 0 overlapInt
 
-      -- Per-tile primitive counts
-      tileCounts = A.fold (+) 0 overlapMatrix
-
-      -- Compact tile bins via binary search on inclusive scan
-      -- For each (tile, slot), find the primitive index at that slot
-      -- by searching for smallest p where inclusiveScan[t][p] >= slot + 1
-      tileBins =
+      -- Source array: each (tile, prim) position holds prim index
+      primIndices =
         A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
-          let Z :. t :. slot = A.unlift ix :: Z :. Exp Int :. Exp Int
-              target = slot + 1
-              initial = A.lift (0 :: Exp Int, A.constant (numPrims - 1) :: Exp Int)
-              bsCond st = let (lo, hi) = A.unlift st :: (Exp Int, Exp Int) in lo A.< hi
-              bsBody st =
-                let (lo, hi) = A.unlift st :: (Exp Int, Exp Int)
-                    mid = (lo + hi) `A.quot` 2
-                    val = inclusiveScan A.! A.lift (Z :. t :. mid)
-                 in A.cond
-                      (val A.>= target)
-                      (A.lift (lo, mid))
-                      (A.lift (mid + 1, hi))
-              (result, _) = A.unlift (A.while bsCond bsBody initial) :: (Exp Int, Exp Int)
-           in result
-   in -- Pixel shader: iterate only primitives in this pixel's tile
+          let Z :. _ :. p = A.unlift ix :: Z :. Exp Int :. Exp Int
+           in p
+
+      -- Build compact tile bins via permute (no loops!)
+      -- Scatter prim indices to their compact positions
+      defaultBins = A.fill (A.constant (Z :. numTiles :. numPrims)) (0 :: Exp Int)
+      tileBins =
+        A.permute
+          const -- combination (no collisions expected)
+          defaultBins
+          ( \ix ->
+              let Z :. t :. _ = A.unlift ix :: Z :. Exp Int :. Exp Int
+                  overlap = overlapInt A.! ix
+                  slot = prefixSum A.! ix
+               in A.cond
+                    (overlap A.== 1)
+                    (A.Just_ (A.lift (Z :. t :. slot)))
+                    A.Nothing_
+          )
+          primIndices
+   in -- Pixel shader: iterate only the compact bin for this tile
       A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
         let Z :. y :. x = A.unlift ix :: Z :. Exp Int :. Exp Int
             px = A.fromIntegral x :: Exp Float
