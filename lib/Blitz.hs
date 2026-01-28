@@ -50,22 +50,32 @@ circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
 lineTagVal = 1
 
-distToSegmentSq :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float
-distToSegmentSq px py x1 y1 x2 y2 =
+-- Optimized line hit test: returns True if pixel is within threshold of line segment
+-- Avoids division by multiplying through
+lineHitTest :: Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Float -> Exp Bool
+lineHitTest px py x1 y1 x2 y2 threshold =
   let dx = x2 - x1
       dy = y2 - y1
       l2 = dx * dx + dy * dy
       vx = px - x1
       vy = py - y1
+      v2 = vx * vx + vy * vy
+      u = vx * dx + vy * dy -- projection of v onto d
+      wx = px - x2
+      wy = py - y2
+      w2 = wx * wx + wy * wy
+      threshSq = threshold * threshold
    in A.cond
         (l2 A.== 0)
-        (vx * vx + vy * vy)
-        ( let t = A.max 0 (A.min 1 ((vx * dx + vy * dy) / l2))
-              projX = x1 + t * dx
-              projY = y1 + t * dy
-              dxp = px - projX
-              dyp = py - projY
-           in dxp * dxp + dyp * dyp
+        (v2 A.< threshSq) -- degenerate: point
+        ( A.cond
+            (u A.<= 0)
+            (v2 A.< threshSq) -- closest to p1
+            ( A.cond
+                (u A.>= l2)
+                (w2 A.< threshSq) -- closest to p2
+                (v2 * l2 - u * u A.< threshSq * l2) -- closest to segment interior (no division!)
+            )
         )
 
 type Inputs = (Vector Int32, Vector Float, Vector Float, Vector Float, Vector Float, Vector Float, Vector Word32)
@@ -120,12 +130,11 @@ renderPipeline input =
           let Z :. _ :. p = A.unlift ix :: Z :. Exp Int :. Exp Int
            in p
 
-      -- Build compact tile bins via permute (no loops!)
-      -- Scatter prim indices to their compact positions
+      -- Build compact tile bins via permute
       defaultBins = A.fill (A.constant (Z :. numTiles :. numPrims)) (0 :: Exp Int)
       tileBins =
         A.permute
-          const -- combination (no collisions expected)
+          const
           defaultBins
           ( \ix ->
               let Z :. t :. _ = A.unlift ix :: Z :. Exp Int :. Exp Int
@@ -149,27 +158,32 @@ renderPipeline input =
             body st =
               let (i, acc) = A.unlift st :: (Exp Int, Exp Word32)
                   primIdx = tileBins A.! A.lift (Z :. tileId :. i)
-                  tag = tags A.!! primIdx
-                  lx1 = x1s A.!! primIdx
-                  ly1 = y1s A.!! primIdx
-                  lx2 = x2s A.!! primIdx
-                  ly2 = y2s A.!! primIdx
-                  s = ss A.!! primIdx
-                  col = cols A.!! primIdx
+                  -- Quick bbox rejection first (cheap)
                   inBox =
                     px A.>= minXs A.!! primIdx
                       A.&& px A.<= maxXs A.!! primIdx
                       A.&& py A.>= minYs A.!! primIdx
                       A.&& py A.<= maxYs A.!! primIdx
-                  isCircle = tag A.== A.constant circleTagVal
-                  ddx = px - lx1
-                  ddy = py - ly1
-                  circleHit = ddx * ddx + ddy * ddy A.< s * s
-                  lineHit = distToSegmentSq px py lx1 ly1 lx2 ly2 A.< s * s
-                  isHit = inBox A.&& (isCircle ? (circleHit, lineHit))
-                  newAcc = isHit ? (col, acc)
-                  newI = isHit ? (A.constant (-1), i - 1)
-               in A.lift (newI, newAcc)
+               in A.cond
+                    (A.not inBox)
+                    (A.lift (i - 1, acc)) -- skip if outside bbox
+                    ( let tag = tags A.!! primIdx
+                          lx1 = x1s A.!! primIdx
+                          ly1 = y1s A.!! primIdx
+                          lx2 = x2s A.!! primIdx
+                          ly2 = y2s A.!! primIdx
+                          s = ss A.!! primIdx
+                          col = cols A.!! primIdx
+                          isCircle = tag A.== A.constant circleTagVal
+                          ddx = px - lx1
+                          ddy = py - ly1
+                          circleHit = ddx * ddx + ddy * ddy A.< s * s
+                          lineHit = lineHitTest px py lx1 ly1 lx2 ly2 s
+                          isHit = isCircle ? (circleHit, lineHit)
+                          newAcc = isHit ? (col, acc)
+                          newI = isHit ? (A.constant (-1), i - 1)
+                       in A.lift (newI, newAcc)
+                    )
          in A.snd (A.while wcond body initial)
 
 data Env = Env

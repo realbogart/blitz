@@ -14,7 +14,7 @@ build-type:         Simple
 -- extra-source-files:
 
 common warnings
-    ghc-options:      -Weverything -Wno-missing-signatures -Wno-missing-exported-signatures
+    ghc-options:      -O2 -Weverything -Wno-missing-signatures -Wno-missing-exported-signatures
                       -Wno-implicit-prelude -Wno-missing-export-lists -Wno-missing-import-lists
                       -Wno-monomorphism-restriction -Wno-type-defaults -Wno-missing-safe-haskell-mode
                       -Wno-unsafe -Wno-missing-local-signatures -Wno-missing-kind-signatures
