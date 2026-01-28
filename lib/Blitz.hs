@@ -37,7 +37,7 @@ fbW = 320
 fbH = 200
 
 numPrims :: Int
-numPrims = 500
+numPrims = 800
 
 tileW, tileH, tilesX, tilesY, numTiles :: Int
 tileW = 16
