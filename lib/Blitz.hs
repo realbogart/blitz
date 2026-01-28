@@ -211,6 +211,7 @@ data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
     envFrameRef :: IORef Int,
+    envPausedRef :: IORef Bool,
     envRender :: Inputs -> Array DIM2 Word32,
     mTags :: VSM.IOVector Int32,
     mX1s :: VSM.IOVector Float,
@@ -223,11 +224,16 @@ data Env = Env
 
 tick :: Tick
 tick env = do
+  -- Toggle pause with 'P' key
+  pPressed <- isKeyPressed KeyP
+  when pPressed $ modifyIORef' env.envPausedRef Prelude.not
+
+  paused <- readIORef env.envPausedRef
   f <- readIORef env.envFrameRef
-  modifyIORef' env.envFrameRef (+ 1)
+  unless paused $ modifyIORef' env.envFrameRef (+ 1)
   let frame = Prelude.fromIntegral f :: Float
 
-  -- Scattered small primitives instead of large star burst
+  -- Scattered small primitives instead of large star burst (skip when paused)
   let update i
         | i Prelude.== numPrims = return ()
         | otherwise = do
@@ -254,7 +260,7 @@ tick env = do
             VSM.unsafeWrite env.mSizes i (if isCircle then 3 + 2 * sin (frame / 15 + fi) else 1)
             VSM.unsafeWrite env.mColors i colAt
             update (i + 1)
-  update 0
+  unless paused $ update 0
 
   shTags <- VS.unsafeFreeze env.mTags
   shX1s <- VS.unsafeFreeze env.mX1s
@@ -322,6 +328,7 @@ runWindow tickRef = do
   _ <- setTextureFilter tex TextureFilterPoint
 
   frameRef <- newIORef (0 :: Int)
+  pausedRef <- newIORef False
 
   -- Pre-allocate mutable vectors
   tagsV <- VSM.new numPrims
@@ -337,6 +344,7 @@ runWindow tickRef = do
           { envWindow = window,
             envTex = tex,
             envFrameRef = frameRef,
+            envPausedRef = pausedRef,
             envRender = CPU.run1 renderPipeline,
             mTags = tagsV,
             mX1s = x1sV,
