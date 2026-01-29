@@ -39,26 +39,10 @@ library
     import:           warnings
     import:           extensions
     hs-source-dirs:   lib
-    exposed-modules:  Blitz
-    other-modules:    Blitz.Draw
+    exposed-modules:  Blitz,
+                      Blitz.Draw
     build-depends:    base,
-                      text,
-                      bytestring,
-                      async,
-                      unordered-containers,
-                      directory,
-                      filepath,
-                      stm,
-                      transformers,
-                      binary,
-                      foreign-store,
-                      h-raylib,
                       accelerate,
-                      accelerate-llvm,
-                      accelerate-llvm-native,
-                      accelerate-llvm-ptx,
-                      accelerate-io,
-                      accelerate-io-vector,
                       vector
     hs-source-dirs:   src
     default-language: GHC2021
@@ -69,7 +53,12 @@ executable blitz
     main-is:          Main.hs
     build-depends:    base,
                       blitz,
-                      cmdargs
+                      accelerate,
+                      accelerate-io-vector,
+                      accelerate-llvm-native,
+                      foreign-store,
+                      h-raylib,
+                      vector
     hs-source-dirs:   src
     default-language: GHC2021
     ghc-options:      -threaded -rtsopts -with-rtsopts=-N
