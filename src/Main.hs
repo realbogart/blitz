@@ -66,11 +66,11 @@ tick env = do
 drawScene :: Float -> DrawM ()
 drawScene frame = do
   let t = frame / 60
-      camZoomAt = Prelude.max 0.05 (1.0 + 0.2 * sin (t * 0.7))
+      camZoomAt = Prelude.max 0.05 (1.4 + 4.6 * sin (t * 0.5))
       cam =
         Camera2D
-          { camCenterX = sin t * 1.5,
-            camCenterY = cos t * 1.0,
+          { camCenterX = sin t * 5.5,
+            camCenterY = cos t * 4.5,
             camZoom = camZoomAt
           }
   withCamera cam $ do
@@ -84,20 +84,20 @@ drawScene frame = do
       | i Prelude.== demoPrims = pure ()
       | otherwise = do
           let fi = Prelude.fromIntegral (i + 1) :: Float
-              baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` 80) / 20 - 2.0
-              baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` 60) / 15 - 2.0
-              pxAt = baseX + 0.3 * cos (frame / 40 + fi * 0.3)
-              pyAt = baseY + 0.3 * sin (frame / 35 + fi * 0.4)
+              baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` 160) / 20 - 4.0
+              baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` 120) / 15 - 4.0
+              pxAt = baseX + 0.8 * cos (frame / 40 + fi * 0.3)
+              pyAt = baseY + 0.8 * sin (frame / 35 + fi * 0.4)
               isCircle = (i + 1) `Prelude.rem` 3 Prelude./= 0 -- 2/3 circles, 1/3 lines
               colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
           if isCircle
-            then drawCircle pxAt pyAt (0.06 + 0.03 * sin (frame / 15 + fi)) colAt
+            then drawCircle pxAt pyAt (0.12 + 0.06 * sin (frame / 15 + fi)) colAt
             else do
-              let lineLen = 0.2 + 0.1 * sin (fi * 0.5)
+              let lineLen = 0.45 + 0.2 * sin (fi * 0.5)
                   lineAngle = frame / 60 + fi * 0.7
                   lx2 = pxAt + lineLen * cos lineAngle
                   ly2 = pyAt + lineLen * sin lineAngle
-              drawLine pxAt pyAt lx2 ly2 0.03 colAt
+              drawLine pxAt pyAt lx2 ly2 0.06 colAt
           go (i + 1)
 
 main :: IO ()
