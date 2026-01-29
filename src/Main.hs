@@ -69,8 +69,8 @@ drawScene frame = do
       camZoomAt = 0.1 * (1.4 + sin (t * 0.5))
       cam =
         Camera2D
-          { camCenterX = sin t * 5.5,
-            camCenterY = cos t * 4.5,
+          { camCenterX = 30 - sin t * 5.5,
+            camCenterY = 30 + cos t * 4.5,
             camZoom = camZoomAt
           }
   withCamera cam $ do
@@ -84,8 +84,8 @@ drawScene frame = do
       | i Prelude.== demoPrims = pure ()
       | otherwise = do
           let fi = Prelude.fromIntegral (i + 1) :: Float
-              baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` 160) / 20 - 4.0
-              baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` 120) / 15 - 4.0
+              baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` 1600) / 20 - 4.0
+              baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` 1200) / 20 - 4.0
               pxAt = baseX + 0.8 * cos (frame / 40 + fi * 0.3)
               pyAt = baseY + 0.8 * sin (frame / 35 + fi * 0.4)
               isCircle = (i + 1) `Prelude.rem` 3 Prelude./= 0 -- 2/3 circles, 1/3 lines
