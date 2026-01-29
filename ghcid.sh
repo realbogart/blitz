@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-ghcid --command "cabal repl lib:blitz" --test="mainDev"
+ghcid --command "cabal repl exe:blitz" --test="mainDev"
