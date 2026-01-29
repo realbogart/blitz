@@ -37,6 +37,7 @@
                 llvmPackages.clang-unwrapped
                 cudaPackages.cudatoolkit
                 cudaPackages.cuda_nvcc
+                pixelorama
               ];
 
               shell.shellHook = ''
