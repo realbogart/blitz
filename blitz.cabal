@@ -41,6 +41,7 @@ library
     hs-source-dirs:   lib
     exposed-modules:  Blitz,
                       Blitz.Draw
+    other-modules:    Blitz.Framebuffer
     build-depends:    base,
                       accelerate,
                       accelerate-io-vector,

@@ -20,6 +20,7 @@ module Blitz
 where
 
 import Blitz.Draw (DrawM, runDrawFrame)
+import Blitz.Framebuffer (fbH, fbW)
 import Control.Monad (when)
 import Data.Array.Accelerate as A
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
@@ -28,10 +29,6 @@ import Data.IORef
 import Data.Vector.Storable qualified as VS
 import Data.Vector.Storable.Mutable qualified as VSM
 import Foreign.Ptr (Ptr)
-
-fbW, fbH :: Int
-fbW = 320
-fbH = 200
 
 maxNumPrims :: Int
 -- Maximum number of primitives the renderer can handle per frame.

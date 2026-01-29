@@ -3,13 +3,29 @@ module Blitz.Draw
     runDrawFrame,
     drawCircle,
     drawLine,
+    Camera2D (..),
+    withCamera,
   )
 where
 
+import Blitz.Framebuffer qualified as Blitz
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Int (Int32)
 import Data.Vector.Storable.Mutable qualified as VSM
 import Data.Word (Word32)
+
+data Camera2D = Camera2D
+  { camCenterX :: Float,
+    camCenterY :: Float,
+    camZoom :: Float
+  }
+
+data Space
+  = ScreenSpace
+  | WorldSpace !Camera2D
+
+baseScale :: Float
+baseScale = 80.0
 
 data DrawEnv = DrawEnv
   { tags :: VSM.IOVector Int32,
@@ -21,7 +37,8 @@ data DrawEnv = DrawEnv
     colors :: VSM.IOVector Word32,
     maxPrims :: Int,
     circleTag :: Int32,
-    lineTag :: Int32
+    lineTag :: Int32,
+    space :: Space
   }
 
 newtype DrawM a = DrawM {unDrawM :: DrawEnv -> Int -> IO (Int, a)}
@@ -81,7 +98,8 @@ runDrawFrame !tagsV !x1sV !y1sV !x2sV !y2sV !sizesV !colorsV !maxNumPrims !circl
             colors = colorsV,
             maxPrims = maxNumPrims,
             circleTag = circleTagVal,
-            lineTag = lineTagVal
+            lineTag = lineTagVal,
+            space = ScreenSpace
           }
   let DrawM m = action
   (finalIdx, _) <- m env 0
@@ -107,18 +125,44 @@ padDisabled !env !start !end = go start
           VSM.unsafeWrite env.colors i 0x00000000
           go (i + 1)
 
+-- | Run a drawing action in world space using the provided camera.
+{-# INLINE withCamera #-}
+withCamera :: Camera2D -> DrawM a -> DrawM a
+withCamera !cam (DrawM m) = DrawM $ \env s ->
+  m env {space = WorldSpace cam} s
+
+{-# INLINE toPxPoint #-}
+toPxPoint :: Space -> Float -> Float -> (Float, Float)
+toPxPoint ScreenSpace !x !y = (x, y)
+toPxPoint (WorldSpace cam) !wx !wy =
+  let !screenCenterX = Prelude.fromIntegral Blitz.fbW * 0.5
+      !screenCenterY = Prelude.fromIntegral Blitz.fbH * 0.5
+      !scale = baseScale * cam.camZoom
+      !sx = (wx - cam.camCenterX) * scale + screenCenterX
+      !sy = (wy - cam.camCenterY) * scale + screenCenterY
+   in (sx, sy)
+
+{-# INLINE toPxLen #-}
+toPxLen :: Space -> Float -> Float
+toPxLen ScreenSpace !len = len
+toPxLen (WorldSpace cam) !len =
+  let !scale = baseScale * cam.camZoom
+   in len * scale
+
 -- | Draw a circle at (x, y) with radius r and color col
 {-# INLINE drawCircle #-}
 drawCircle :: Float -> Float -> Float -> Word32 -> DrawM ()
 drawCircle !x !y !r !col = DrawM $ \env !i ->
   if i < env.maxPrims
     then do
+      let (!px, !py) = toPxPoint env.space x y
+          !pr = toPxLen env.space r
       VSM.unsafeWrite env.tags i env.circleTag
-      VSM.unsafeWrite env.x1s i x
-      VSM.unsafeWrite env.y1s i y
+      VSM.unsafeWrite env.x1s i px
+      VSM.unsafeWrite env.y1s i py
       VSM.unsafeWrite env.x2s i 0
       VSM.unsafeWrite env.y2s i 0
-      VSM.unsafeWrite env.sizes i r
+      VSM.unsafeWrite env.sizes i pr
       VSM.unsafeWrite env.colors i col
       let !i' = i + 1
       pure (i', ())
@@ -130,12 +174,15 @@ drawLine :: Float -> Float -> Float -> Float -> Float -> Word32 -> DrawM ()
 drawLine !lx1 !ly1 !lx2 !ly2 !thickness !col = DrawM $ \env !i ->
   if i < env.maxPrims
     then do
+      let (!px1, !py1) = toPxPoint env.space lx1 ly1
+          (!px2, !py2) = toPxPoint env.space lx2 ly2
+          !pth = toPxLen env.space thickness
       VSM.unsafeWrite env.tags i env.lineTag
-      VSM.unsafeWrite env.x1s i lx1
-      VSM.unsafeWrite env.y1s i ly1
-      VSM.unsafeWrite env.x2s i lx2
-      VSM.unsafeWrite env.y2s i ly2
-      VSM.unsafeWrite env.sizes i thickness
+      VSM.unsafeWrite env.x1s i px1
+      VSM.unsafeWrite env.y1s i py1
+      VSM.unsafeWrite env.x2s i px2
+      VSM.unsafeWrite env.y2s i py2
+      VSM.unsafeWrite env.sizes i pth
       VSM.unsafeWrite env.colors i col
       let !i' = i + 1
       pure (i', ())
