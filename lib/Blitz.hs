@@ -81,12 +81,90 @@ lineHitTest px py x1 y1 x2 y2 threshold =
             )
         )
 
-type Inputs = (Vector Int32, Vector Float, Vector Float, Vector Float, Vector Float, Vector Float, Vector Word32)
+buildTileBins ::
+  Int ->
+  VS.Vector Int32 ->
+  VS.Vector Float ->
+  VS.Vector Float ->
+  VS.Vector Float ->
+  VS.Vector Float ->
+  VS.Vector Float ->
+  VSM.IOVector Int32 ->
+  VSM.IOVector Int32 ->
+  IO ()
+buildTileBins nPrims tags x1s y1s x2s y2s ss mTileCounts mTileBins = do
+  VSM.set mTileCounts 0
+  VSM.set mTileBins 0
+  let maxX = Prelude.fromIntegral (fbW - 1) :: Float
+      maxY = Prelude.fromIntegral (fbH - 1) :: Float
+      clampInt lo hi v = Prelude.max lo (Prelude.min hi v)
+      goPrim !p
+        | p Prelude.>= nPrims = pure ()
+        | otherwise = do
+            let tag = VS.unsafeIndex tags p
+                x1 = VS.unsafeIndex x1s p
+                y1 = VS.unsafeIndex y1s p
+                x2 = VS.unsafeIndex x2s p
+                y2 = VS.unsafeIndex y2s p
+                s = VS.unsafeIndex ss p
+                (minX0, maxX0) =
+                  if tag Prelude.== circleTagVal
+                    then (x1 - s, x1 + s)
+                    else (Prelude.min x1 x2 - s, Prelude.max x1 x2 + s)
+                (minY0, maxY0) =
+                  if tag Prelude.== circleTagVal
+                    then (y1 - s, y1 + s)
+                    else (Prelude.min y1 y2 - s, Prelude.max y1 y2 + s)
+            if maxX0 Prelude.< 0
+              Prelude.|| maxY0 Prelude.< 0
+              Prelude.|| minX0 Prelude.> maxX
+              Prelude.|| minY0 Prelude.> maxY
+              then goPrim (p + 1)
+              else do
+                let minX = Prelude.max 0 minX0
+                    maxX' = Prelude.min maxX maxX0
+                    minY = Prelude.max 0 minY0
+                    maxY' = Prelude.min maxY maxY0
+                    tx0 = clampInt 0 (tilesX - 1) (Prelude.floor minX `Prelude.div` tileW)
+                    tx1 = clampInt 0 (tilesX - 1) (Prelude.floor maxX' `Prelude.div` tileW)
+                    ty0 = clampInt 0 (tilesY - 1) (Prelude.floor minY `Prelude.div` tileH)
+                    ty1 = clampInt 0 (tilesY - 1) (Prelude.floor maxY' `Prelude.div` tileH)
+                    goTy !ty
+                      | ty Prelude.> ty1 = pure ()
+                      | otherwise = do
+                          let rowBase = ty * tilesX
+                              goTx !tx
+                                | tx Prelude.> tx1 = pure ()
+                                | otherwise = do
+                                    let t = rowBase + tx
+                                    c <- VSM.unsafeRead mTileCounts t
+                                    let cInt = Prelude.fromIntegral c :: Int
+                                    when (cInt Prelude.< maxPrimsPerTile) $ do
+                                      VSM.unsafeWrite mTileBins (t * maxPrimsPerTile + cInt) (Prelude.fromIntegral p)
+                                      VSM.unsafeWrite mTileCounts t (Prelude.fromIntegral (cInt + 1))
+                                    goTx (tx + 1)
+                          goTx tx0
+                          goTy (ty + 1)
+                goTy ty0
+                goPrim (p + 1)
+  goPrim 0
+
+type Inputs =
+  ( Vector Int32,
+    Vector Float,
+    Vector Float,
+    Vector Float,
+    Vector Float,
+    Vector Float,
+    Vector Word32,
+    Vector Int32,
+    Vector Int32
+  )
 
 renderPipeline :: Acc Inputs -> Acc (Array DIM2 Word32)
 renderPipeline input =
   let -- Unpack inputs
-      (tags, x1s, y1s, x2s, y2s, ss, cols) =
+      (tags, x1s, y1s, x2s, y2s, ss, cols, tileCounts, tileBinsFlat) =
         ( A.unlift input ::
             ( Acc (Vector Int32),
               Acc (Vector Float),
@@ -94,7 +172,9 @@ renderPipeline input =
               Acc (Vector Float),
               Acc (Vector Float),
               Acc (Vector Float),
-              Acc (Vector Word32)
+              Acc (Vector Word32),
+              Acc (Vector Int32),
+              Acc (Vector Int32)
             )
         )
 
@@ -125,61 +205,22 @@ renderPipeline input =
             y2 = y2s A.!! i
             s = ss A.!! i
          in isCircleAt i ? (y1 + s, A.max y1 y2 + s)
-
-      -- Overlap matrix: (numTiles, numPrims) — 1 if prim's bbox overlaps tile, 0 otherwise
-      overlapInt =
-        A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
-          let Z :. t :. p = A.unlift ix :: Z :. Exp Int :. Exp Int
-              tx = t `A.rem` A.constant tilesX
-              ty = t `A.quot` A.constant tilesX
-              tMinX = A.fromIntegral (tx * A.constant tileW) :: Exp Float
-              tMaxX = A.fromIntegral ((tx + 1) * A.constant tileW - 1) :: Exp Float
-              tMinY = A.fromIntegral (ty * A.constant tileH) :: Exp Float
-              tMaxY = A.fromIntegral ((ty + 1) * A.constant tileH - 1) :: Exp Float
-              overlaps =
-                maxXs A.!! p A.>= tMinX
-                  A.&& minXs A.!! p A.<= tMaxX
-                  A.&& maxYs A.!! p A.>= tMinY
-                  A.&& minYs A.!! p A.<= tMaxY
-           in A.cond overlaps (1 :: Exp Int) 0
-
-      -- Exclusive prefix sum: gives slot positions; fold gives tile counts
-      T2 prefixSum tileCounts = A.scanl' (+) 0 overlapInt
-
-      -- Capped tile counts for bounded iteration
-      cappedTileCounts = A.map (A.min (A.constant maxPrimsPerTile)) tileCounts
-
-      -- Build compact tile bins via permute - CAPPED to maxPrimsPerTile
-      defaultBins = A.fill (A.constant (Z :. numTiles :. maxPrimsPerTile)) (0 :: Exp Int)
-      tileBins =
-        A.permute
-          const
-          defaultBins
-          ( \ix ->
-              let Z :. t :. _ = A.unlift ix :: Z :. Exp Int :. Exp Int
-                  overlap = overlapInt A.! ix
-                  slot = prefixSum A.! ix
-               in A.cond
-                    (overlap A.== 1 A.&& slot A.< A.constant maxPrimsPerTile)
-                    (A.Just_ (A.lift (Z :. t :. slot)))
-                    A.Nothing_
-          )
-          ( A.generate (A.constant (Z :. numTiles :. numPrims)) $ \ix ->
-              let Z :. _ :. primIdx = A.unlift ix :: Z :. Exp Int :. Exp Int
-               in primIdx
-          )
    in -- Pixel shader: iterate only the compact bin for this tile
       A.generate (A.constant (Z :. fbH :. fbW)) $ \ix ->
         let Z :. y :. x = A.unlift ix :: Z :. Exp Int :. Exp Int
             px = A.fromIntegral x :: Exp Float
             py = A.fromIntegral y :: Exp Float
             tileId = (y `A.quot` A.constant tileH) * A.constant tilesX + (x `A.quot` A.constant tileW)
-            tileCount = cappedTileCounts A.! A.index1 tileId
+            tileCount =
+              A.min
+                (A.constant maxPrimsPerTile)
+                (A.fromIntegral (tileCounts A.! A.index1 tileId) :: Exp Int)
             initial = A.lift (tileCount - 1, A.constant 0xFF000000 :: Exp Word32)
             wcond st = let (i, _) = A.unlift st :: (Exp Int, Exp Word32) in i A.>= 0
             body st =
               let (i, acc) = A.unlift st :: (Exp Int, Exp Word32)
-                  primIdx = tileBins A.! A.lift (Z :. tileId :. i)
+                  binIndex = tileId * A.constant maxPrimsPerTile + i
+                  primIdx = A.fromIntegral (tileBinsFlat A.! A.index1 binIndex)
                   -- Quick bbox rejection first (cheap)
                   inBox =
                     px A.>= minXs A.!! primIdx
@@ -220,7 +261,9 @@ data Env = Env
     mX2s :: VSM.IOVector Float,
     mY2s :: VSM.IOVector Float,
     mSizes :: VSM.IOVector Float,
-    mColors :: VSM.IOVector Word32
+    mColors :: VSM.IOVector Word32,
+    mTileCounts :: VSM.IOVector Int32,
+    mTileBins :: VSM.IOVector Int32
   }
 
 tick :: Tick
@@ -235,20 +278,22 @@ tick env = do
   let frame = Prelude.fromIntegral f :: Float
 
   -- Scattered small primitives instead of large star burst (skip when paused)
-  unless paused $
-    void $
-      runDrawFrame
-        env.mTags
-        env.mX1s
-        env.mY1s
-        env.mX2s
-        env.mY2s
-        env.mSizes
-        env.mColors
-        numPrims
-        circleTagVal
-        lineTagVal
-        (drawScene frame)
+  nPrimsDrawn <-
+    if paused
+      then pure numPrims
+      else
+        runDrawFrame
+          env.mTags
+          env.mX1s
+          env.mY1s
+          env.mX2s
+          env.mY2s
+          env.mSizes
+          env.mColors
+          numPrims
+          circleTagVal
+          lineTagVal
+          (drawScene frame)
 
   shTags <- VS.unsafeFreeze env.mTags
   shX1s <- VS.unsafeFreeze env.mX1s
@@ -258,7 +303,13 @@ tick env = do
   shSizes <- VS.unsafeFreeze env.mSizes
   shColors <- VS.unsafeFreeze env.mColors
 
+  buildTileBins nPrimsDrawn shTags shX1s shY1s shX2s shY2s shSizes env.mTileCounts env.mTileBins
+  shTileCounts <- VS.unsafeFreeze env.mTileCounts
+  shTileBins <- VS.unsafeFreeze env.mTileBins
+
   let sh = Z :. numPrims
+      shTileCountsShape = Z :. numTiles
+      shTileBinsShape = Z :. (numTiles * maxPrimsPerTile)
       inputs =
         ( AVS.fromVectors sh shTags,
           AVS.fromVectors sh shX1s,
@@ -266,7 +317,9 @@ tick env = do
           AVS.fromVectors sh shX2s,
           AVS.fromVectors sh shY2s,
           AVS.fromVectors sh shSizes,
-          AVS.fromVectors sh shColors
+          AVS.fromVectors sh shColors,
+          AVS.fromVectors shTileCountsShape shTileCounts,
+          AVS.fromVectors shTileBinsShape shTileBins
         )
 
   let arr = env.envRender inputs
@@ -353,6 +406,8 @@ runWindow tickRef = do
   y2sV <- VSM.new numPrims
   sizesV <- VSM.new numPrims
   colorsV <- VSM.new numPrims
+  tileCountsV <- VSM.new numTiles
+  tileBinsV <- VSM.new (numTiles * maxPrimsPerTile)
 
   let env =
         Env
@@ -367,7 +422,9 @@ runWindow tickRef = do
             mX2s = x2sV,
             mY2s = y2sV,
             mSizes = sizesV,
-            mColors = colorsV
+            mColors = colorsV,
+            mTileCounts = tileCountsV,
+            mTileBins = tileBinsV
           }
 
   gameLoop env tickRef `finally` do
