@@ -366,7 +366,7 @@ renderPipeline input =
                 (A.constant maxPrimsPerTile)
                 (A.fromIntegral (tileCounts A.! A.index1 tileId) :: Exp Int)
             initial =
-              A.lift (tileCount - 1, A.constant 0xFF000000 :: Exp Word32, A.constant 0 :: Exp Word32)
+              A.lift (tileCount - 1, A.constant 0x00000000 :: Exp Word32, A.constant 0 :: Exp Word32)
             wcond st = let (i, _, _) = A.unlift st :: (Exp Int, Exp Word32, Exp Word32) in i A.>= 0
             body st =
               let (i, acc, accA) = A.unlift st :: (Exp Int, Exp Word32, Exp Word32)
@@ -401,5 +401,6 @@ renderPipeline input =
                        in A.lift (newI, newAcc, newAccA)
                     )
             final = A.while wcond body initial
-            (_, finalAcc, _) = A.unlift final :: (Exp Int, Exp Word32, Exp Word32)
+            (_, finalAcc0, _) = A.unlift final :: (Exp Int, Exp Word32, Exp Word32)
+            finalAcc = overPremul finalAcc0 (A.constant 0xFF000000)
          in finalAcc
