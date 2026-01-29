@@ -66,7 +66,7 @@ tick env = do
 drawScene :: Float -> DrawM ()
 drawScene frame = do
   let t = frame / 60
-      camZoomAt = Prelude.max 0.05 (1.4 + 4.6 * sin (t * 0.5))
+      camZoomAt = 0.1 * (1.4 + sin (t * 0.5))
       cam =
         Camera2D
           { camCenterX = sin t * 5.5,
