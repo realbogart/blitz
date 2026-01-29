@@ -43,6 +43,8 @@ library
                       Blitz.Draw
     build-depends:    base,
                       accelerate,
+                      accelerate-io-vector,
+                      accelerate-llvm-native,
                       vector
     hs-source-dirs:   src
     default-language: GHC2021
@@ -53,12 +55,8 @@ executable blitz
     main-is:          Main.hs
     build-depends:    base,
                       blitz,
-                      accelerate,
-                      accelerate-io-vector,
-                      accelerate-llvm-native,
                       foreign-store,
-                      h-raylib,
-                      vector
+                      h-raylib
     hs-source-dirs:   src
     default-language: GHC2021
     ghc-options:      -threaded -rtsopts -with-rtsopts=-N

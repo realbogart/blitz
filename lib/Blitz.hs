@@ -1,7 +1,10 @@
 module Blitz
-  ( Inputs,
-    buildTileBins,
-    renderPipeline,
+  ( Resources,
+    initResources,
+    renderFrame,
+    renderFrameCached,
+    withFramePixels,
+    withFramePixelsCached,
     fbW,
     fbH,
     numPrims,
@@ -16,10 +19,15 @@ module Blitz
   )
 where
 
+import Blitz.Draw (DrawM, runDrawFrame)
 import Control.Monad (when)
 import Data.Array.Accelerate as A
+import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
+import Data.Array.Accelerate.LLVM.Native as CPU
+import Data.IORef
 import Data.Vector.Storable qualified as VS
 import Data.Vector.Storable.Mutable qualified as VSM
+import Foreign.Ptr (Ptr)
 
 fbW, fbH :: Int
 fbW = 320
@@ -39,6 +47,138 @@ maxPrimsPerTile = 128 -- Cap bin size to reduce memory footprint
 circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
 lineTagVal = 1
+
+data Resources = Resources
+  { resTagsV :: VSM.IOVector Int32,
+    resX1sV :: VSM.IOVector Float,
+    resY1sV :: VSM.IOVector Float,
+    resX2sV :: VSM.IOVector Float,
+    resY2sV :: VSM.IOVector Float,
+    resSizesV :: VSM.IOVector Float,
+    resColorsV :: VSM.IOVector Word32,
+    resTileCountsV :: VSM.IOVector Int32,
+    resTileBinsV :: VSM.IOVector Int32,
+    resTags :: VS.Vector Int32,
+    resX1s :: VS.Vector Float,
+    resY1s :: VS.Vector Float,
+    resX2s :: VS.Vector Float,
+    resY2s :: VS.Vector Float,
+    resSizes :: VS.Vector Float,
+    resInputs :: Inputs,
+    resRender :: Inputs -> Array DIM2 Word32,
+    resLastCount :: IORef Int
+  }
+
+initResources :: IO Resources
+initResources = do
+  tagsV <- VSM.new numPrims
+  x1sV <- VSM.new numPrims
+  y1sV <- VSM.new numPrims
+  x2sV <- VSM.new numPrims
+  y2sV <- VSM.new numPrims
+  sizesV <- VSM.new numPrims
+  colorsV <- VSM.new numPrims
+  tileCountsV <- VSM.new numTiles
+  tileBinsV <- VSM.new (numTiles * maxPrimsPerTile)
+
+  tags <- VS.unsafeFreeze tagsV
+  x1s <- VS.unsafeFreeze x1sV
+  y1s <- VS.unsafeFreeze y1sV
+  x2s <- VS.unsafeFreeze x2sV
+  y2s <- VS.unsafeFreeze y2sV
+  sizes <- VS.unsafeFreeze sizesV
+  colors <- VS.unsafeFreeze colorsV
+  tileCounts <- VS.unsafeFreeze tileCountsV
+  tileBins <- VS.unsafeFreeze tileBinsV
+
+  let sh = Z :. numPrims
+      shTileCountsShape = Z :. numTiles
+      shTileBinsShape = Z :. (numTiles * maxPrimsPerTile)
+      inputs =
+        ( AVS.fromVectors sh tags,
+          AVS.fromVectors sh x1s,
+          AVS.fromVectors sh y1s,
+          AVS.fromVectors sh x2s,
+          AVS.fromVectors sh y2s,
+          AVS.fromVectors sh sizes,
+          AVS.fromVectors sh colors,
+          AVS.fromVectors shTileCountsShape tileCounts,
+          AVS.fromVectors shTileBinsShape tileBins
+        )
+
+  lastCount <- newIORef 0
+  pure
+    Resources
+      { resTagsV = tagsV,
+        resX1sV = x1sV,
+        resY1sV = y1sV,
+        resX2sV = x2sV,
+        resY2sV = y2sV,
+        resSizesV = sizesV,
+        resColorsV = colorsV,
+        resTileCountsV = tileCountsV,
+        resTileBinsV = tileBinsV,
+        resTags = tags,
+        resX1s = x1s,
+        resY1s = y1s,
+        resX2s = x2s,
+        resY2s = y2s,
+        resSizes = sizes,
+        resInputs = inputs,
+        resRender = CPU.run1 renderPipeline,
+        resLastCount = lastCount
+      }
+
+renderFrame :: Resources -> DrawM a -> IO (VS.Vector Word32)
+renderFrame res action = renderFrameWith res (Just action)
+
+renderFrameCached :: Resources -> IO (VS.Vector Word32)
+renderFrameCached res = renderFrameWith res Nothing
+
+withFramePixels :: Resources -> DrawM a -> (Ptr Word32 -> IO b) -> IO b
+withFramePixels res action k = do
+  vec <- renderFrame res action
+  VS.unsafeWith vec k
+
+withFramePixelsCached :: Resources -> (Ptr Word32 -> IO b) -> IO b
+withFramePixelsCached res k = do
+  vec <- renderFrameCached res
+  VS.unsafeWith vec k
+
+renderFrameWith :: Resources -> Maybe (DrawM a) -> IO (VS.Vector Word32)
+renderFrameWith res action = do
+  nPrimsDrawn <- case action of
+    Just drawAction -> do
+      n <-
+        runDrawFrame
+          res.resTagsV
+          res.resX1sV
+          res.resY1sV
+          res.resX2sV
+          res.resY2sV
+          res.resSizesV
+          res.resColorsV
+          numPrims
+          circleTagVal
+          lineTagVal
+          drawAction
+      writeIORef res.resLastCount n
+      pure n
+    Nothing -> readIORef res.resLastCount
+
+  buildTileBins
+    nPrimsDrawn
+    res.resTags
+    res.resX1s
+    res.resY1s
+    res.resX2s
+    res.resY2s
+    res.resSizes
+    res.resTileCountsV
+    res.resTileBinsV
+
+  let arr = res.resRender res.resInputs
+  pure (AVS.toVectors arr)
 
 -- Optimized line hit test: returns True if pixel is within threshold of line segment
 -- Avoids division by multiplying through
