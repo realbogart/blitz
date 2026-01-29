@@ -69,7 +69,7 @@ runDrawFrame ::
   Int32 ->
   DrawM a ->
   IO Int
-runDrawFrame !tagsV !x1sV !y1sV !x2sV !y2sV !sizesV !colorsV !numPrims !circleTagVal !lineTagVal action = do
+runDrawFrame !tagsV !x1sV !y1sV !x2sV !y2sV !sizesV !colorsV !maxNumPrims !circleTagVal !lineTagVal action = do
   let env =
         DrawEnv
           { tags = tagsV,
@@ -79,15 +79,15 @@ runDrawFrame !tagsV !x1sV !y1sV !x2sV !y2sV !sizesV !colorsV !numPrims !circleTa
             y2s = y2sV,
             sizes = sizesV,
             colors = colorsV,
-            maxPrims = numPrims,
+            maxPrims = maxNumPrims,
             circleTag = circleTagVal,
             lineTag = lineTagVal
           }
   let DrawM m = action
   (finalIdx, _) <- m env 0
-  let !n = min finalIdx numPrims
+  let !n = min finalIdx maxNumPrims
   -- Pad remaining slots with disabled primitives
-  padDisabled env n numPrims
+  padDisabled env n maxNumPrims
   pure n
 
 -- | Pad slots [start..end-1] with disabled primitives that never hit

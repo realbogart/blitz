@@ -7,7 +7,7 @@ module Blitz
     withFramePixelsCached,
     fbW,
     fbH,
-    numPrims,
+    maxNumPrims,
     tileW,
     tileH,
     tilesX,
@@ -33,8 +33,9 @@ fbW, fbH :: Int
 fbW = 320
 fbH = 200
 
-numPrims :: Int
-numPrims = 4000
+maxNumPrims :: Int
+-- Maximum number of primitives the renderer can handle per frame.
+maxNumPrims = 4000
 
 tileW, tileH, tilesX, tilesY, numTiles, maxPrimsPerTile :: Int
 tileW = 16
@@ -71,13 +72,13 @@ data Resources = Resources
 
 initResources :: IO Resources
 initResources = do
-  tagsV <- VSM.new numPrims
-  x1sV <- VSM.new numPrims
-  y1sV <- VSM.new numPrims
-  x2sV <- VSM.new numPrims
-  y2sV <- VSM.new numPrims
-  sizesV <- VSM.new numPrims
-  colorsV <- VSM.new numPrims
+  tagsV <- VSM.new maxNumPrims
+  x1sV <- VSM.new maxNumPrims
+  y1sV <- VSM.new maxNumPrims
+  x2sV <- VSM.new maxNumPrims
+  y2sV <- VSM.new maxNumPrims
+  sizesV <- VSM.new maxNumPrims
+  colorsV <- VSM.new maxNumPrims
   tileCountsV <- VSM.new numTiles
   tileBinsV <- VSM.new (numTiles * maxPrimsPerTile)
 
@@ -91,7 +92,7 @@ initResources = do
   tileCounts <- VS.unsafeFreeze tileCountsV
   tileBins <- VS.unsafeFreeze tileBinsV
 
-  let sh = Z :. numPrims
+  let sh = Z :. maxNumPrims
       shTileCountsShape = Z :. numTiles
       shTileBinsShape = Z :. (numTiles * maxPrimsPerTile)
       inputs =
@@ -158,7 +159,7 @@ renderFrameWith res action = do
           res.resY2sV
           res.resSizesV
           res.resColorsV
-          numPrims
+          maxNumPrims
           circleTagVal
           lineTagVal
           drawAction

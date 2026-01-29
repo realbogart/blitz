@@ -28,6 +28,9 @@ windowHeight = 1200
 targetFramesPerSecond :: Int
 targetFramesPerSecond = 120
 
+demoPrims :: Int
+demoPrims = min 1000 Blitz.maxNumPrims
+
 data Env = Env
   { envWindow :: WindowResources,
     envTex :: Texture,
@@ -64,7 +67,7 @@ drawScene :: Float -> DrawM ()
 drawScene frame = go 0
   where
     go !i
-      | i Prelude.== Blitz.numPrims = pure ()
+      | i Prelude.== demoPrims = pure ()
       | otherwise = do
           let fi = Prelude.fromIntegral (i + 1) :: Float
               -- Pseudo-random but deterministic positions using the index
