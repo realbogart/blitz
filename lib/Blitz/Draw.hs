@@ -10,6 +10,7 @@ where
 
 import Blitz.Framebuffer qualified as Blitz
 import Control.Monad.IO.Class (MonadIO (liftIO))
+import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.Int (Int32)
 import Data.Vector.Storable.Mutable qualified as VSM
 import Data.Word (Word32)
@@ -149,6 +150,18 @@ toPxLen (WorldSpace cam) !len =
   let !scale = baseScale * cam.camZoom
    in len * scale
 
+premulARGB :: Word32 -> Word32
+premulARGB c =
+  let a = (c `shiftR` 24) .&. 0xFF
+      r = (c `shiftR` 16) .&. 0xFF
+      g = (c `shiftR` 8) .&. 0xFF
+      b = c .&. 0xFF
+      mul x = (x * a + 127) `quot` 255
+      r' = mul r
+      g' = mul g
+      b' = mul b
+   in (a `shiftL` 24) .|. (r' `shiftL` 16) .|. (g' `shiftL` 8) .|. b'
+
 -- | Draw a circle at (x, y) with radius r and color col
 {-# INLINE drawCircle #-}
 drawCircle :: Float -> Float -> Float -> Word32 -> DrawM ()
@@ -157,13 +170,14 @@ drawCircle !x !y !r !col = DrawM $ \env !i ->
     then do
       let (!px, !py) = toPxPoint env.space x y
           !pr = toPxLen env.space r
+          !pcol = premulARGB col
       VSM.unsafeWrite env.tags i env.circleTag
       VSM.unsafeWrite env.x1s i px
       VSM.unsafeWrite env.y1s i py
       VSM.unsafeWrite env.x2s i 0
       VSM.unsafeWrite env.y2s i 0
       VSM.unsafeWrite env.sizes i pr
-      VSM.unsafeWrite env.colors i col
+      VSM.unsafeWrite env.colors i pcol
       let !i' = i + 1
       pure (i', ())
     else pure (i, ())
@@ -177,13 +191,14 @@ drawLine !lx1 !ly1 !lx2 !ly2 !thickness !col = DrawM $ \env !i ->
       let (!px1, !py1) = toPxPoint env.space lx1 ly1
           (!px2, !py2) = toPxPoint env.space lx2 ly2
           !pth = toPxLen env.space thickness
+          !pcol = premulARGB col
       VSM.unsafeWrite env.tags i env.lineTag
       VSM.unsafeWrite env.x1s i px1
       VSM.unsafeWrite env.y1s i py1
       VSM.unsafeWrite env.x2s i px2
       VSM.unsafeWrite env.y2s i py2
       VSM.unsafeWrite env.sizes i pth
-      VSM.unsafeWrite env.colors i col
+      VSM.unsafeWrite env.colors i pcol
       let !i' = i + 1
       pure (i', ())
     else pure (i, ())
