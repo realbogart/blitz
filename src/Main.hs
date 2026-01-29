@@ -42,7 +42,9 @@ data Env = Env
 tick :: Tick
 tick env = do
   pPressed <- isKeyPressed KeyP
+  fPressed <- isKeyPressed KeyF
   when pPressed $ modifyIORef' env.envPausedRef Prelude.not
+  when fPressed toggleFullscreen
 
   paused <- readIORef env.envPausedRef
   f <- readIORef env.envFrameRef
@@ -73,11 +75,9 @@ drawScene frame = do
             camCenterY = 30 + cos t * 4.5,
             camZoom = camZoomAt
           }
-  withCamera cam $ do
-    drawLine (-4) 0 4 0 0.02 0xFF2A2A2A
-    drawLine 0 (-3) 0 3 0.02 0xFF2A2A2A
-    go 0
+  withCamera cam (go 0)
   drawLine 12 12 160 12 2 0xFF00D06A
+  -- drawLine 8 8 260 160 0.5 0xFFFFD06A
   drawCircle 24 28 6 0xFFFFC857
   where
     go !i
