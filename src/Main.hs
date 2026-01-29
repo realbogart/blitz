@@ -29,7 +29,7 @@ targetFramesPerSecond :: Int
 targetFramesPerSecond = 120
 
 demoPrims :: Int
-demoPrims = min 2000 Blitz.maxNumPrims
+demoPrims = min 1000 Blitz.maxNumPrims
 
 data Env = Env
   { envWindow :: WindowResources,
