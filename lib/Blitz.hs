@@ -254,6 +254,13 @@ data Env = Env
     envFrameRef :: IORef Int,
     envPausedRef :: IORef Bool,
     envRender :: Inputs -> Array DIM2 Word32,
+    envInputs :: Inputs,
+    vTags :: VS.Vector Int32,
+    vX1s :: VS.Vector Float,
+    vY1s :: VS.Vector Float,
+    vX2s :: VS.Vector Float,
+    vY2s :: VS.Vector Float,
+    vSizes :: VS.Vector Float,
     mTags :: VSM.IOVector Int32,
     mX1s :: VSM.IOVector Float,
     mY1s :: VSM.IOVector Float,
@@ -294,34 +301,9 @@ tick env = do
           lineTagVal
           (drawScene frame)
 
-  shTags <- VS.unsafeFreeze env.mTags
-  shX1s <- VS.unsafeFreeze env.mX1s
-  shY1s <- VS.unsafeFreeze env.mY1s
-  shX2s <- VS.unsafeFreeze env.mX2s
-  shY2s <- VS.unsafeFreeze env.mY2s
-  shSizes <- VS.unsafeFreeze env.mSizes
-  shColors <- VS.unsafeFreeze env.mColors
+  buildTileBins nPrimsDrawn env.vTags env.vX1s env.vY1s env.vX2s env.vY2s env.vSizes env.mTileCounts env.mTileBins
 
-  buildTileBins nPrimsDrawn shTags shX1s shY1s shX2s shY2s shSizes env.mTileCounts env.mTileBins
-  shTileCounts <- VS.unsafeFreeze env.mTileCounts
-  shTileBins <- VS.unsafeFreeze env.mTileBins
-
-  let sh = Z :. numPrims
-      shTileCountsShape = Z :. numTiles
-      shTileBinsShape = Z :. (numTiles * maxPrimsPerTile)
-      inputs =
-        ( AVS.fromVectors sh shTags,
-          AVS.fromVectors sh shX1s,
-          AVS.fromVectors sh shY1s,
-          AVS.fromVectors sh shX2s,
-          AVS.fromVectors sh shY2s,
-          AVS.fromVectors sh shSizes,
-          AVS.fromVectors sh shColors,
-          AVS.fromVectors shTileCountsShape shTileCounts,
-          AVS.fromVectors shTileBinsShape shTileBins
-        )
-
-  let arr = env.envRender inputs
+  let arr = env.envRender env.envInputs
   let vec = AVS.toVectors arr
 
   VS.unsafeWith vec $ \srcPtr -> updateTexture env.envTex (castPtr srcPtr)
@@ -334,7 +316,6 @@ tick env = do
   drawFPS 10 10
   endDrawing
 
--- | Draw the scene with scattered small primitives
 drawScene :: Float -> DrawM ()
 drawScene frame = go 0
   where
@@ -408,6 +389,32 @@ runWindow tickRef = do
   tileCountsV <- VSM.new numTiles
   tileBinsV <- VSM.new (numTiles * maxPrimsPerTile)
 
+  -- Reuse frozen views to avoid per-frame input allocations; data updates via the mutable vectors.
+  shTags <- VS.unsafeFreeze tagsV
+  shX1s <- VS.unsafeFreeze x1sV
+  shY1s <- VS.unsafeFreeze y1sV
+  shX2s <- VS.unsafeFreeze x2sV
+  shY2s <- VS.unsafeFreeze y2sV
+  shSizes <- VS.unsafeFreeze sizesV
+  shColors <- VS.unsafeFreeze colorsV
+  shTileCounts <- VS.unsafeFreeze tileCountsV
+  shTileBins <- VS.unsafeFreeze tileBinsV
+
+  let sh = Z :. numPrims
+      shTileCountsShape = Z :. numTiles
+      shTileBinsShape = Z :. (numTiles * maxPrimsPerTile)
+      inputs =
+        ( AVS.fromVectors sh shTags,
+          AVS.fromVectors sh shX1s,
+          AVS.fromVectors sh shY1s,
+          AVS.fromVectors sh shX2s,
+          AVS.fromVectors sh shY2s,
+          AVS.fromVectors sh shSizes,
+          AVS.fromVectors sh shColors,
+          AVS.fromVectors shTileCountsShape shTileCounts,
+          AVS.fromVectors shTileBinsShape shTileBins
+        )
+
   let env =
         Env
           { envWindow = window,
@@ -415,6 +422,13 @@ runWindow tickRef = do
             envFrameRef = frameRef,
             envPausedRef = pausedRef,
             envRender = CPU.run1 renderPipeline,
+            envInputs = inputs,
+            vTags = shTags,
+            vX1s = shX1s,
+            vY1s = shY1s,
+            vX2s = shX2s,
+            vY2s = shY2s,
+            vSizes = shSizes,
             mTags = tagsV,
             mX1s = x1sV,
             mY1s = y1sV,
