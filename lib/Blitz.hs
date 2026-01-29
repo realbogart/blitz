@@ -42,7 +42,7 @@ tileH = 16
 tilesX = (fbW + tileW - 1) `Prelude.div` tileW
 tilesY = (fbH + tileH - 1) `Prelude.div` tileH
 numTiles = tilesX * tilesY
-maxPrimsPerTile = 128 -- Cap bin size to reduce memory footprint
+maxPrimsPerTile = 256
 
 circleTagVal, lineTagVal :: Int32
 circleTagVal = 0
@@ -290,8 +290,7 @@ type Inputs =
 
 renderPipeline :: Acc Inputs -> Acc (Array DIM2 Word32)
 renderPipeline input =
-  let -- Unpack inputs
-      (tags, x1s, y1s, x2s, y2s, ss, cols, tileCounts, tileBinsFlat) =
+  let (tags, x1s, y1s, x2s, y2s, ss, cols, tileCounts, tileBinsFlat) =
         ( A.unlift input ::
             ( Acc (Vector Int32),
               Acc (Vector Float),
