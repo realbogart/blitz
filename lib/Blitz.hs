@@ -94,7 +94,6 @@ buildTileBins ::
   IO ()
 buildTileBins nPrims tags x1s y1s x2s y2s ss mTileCounts mTileBins = do
   VSM.set mTileCounts 0
-  VSM.set mTileBins 0
   let maxX = Prelude.fromIntegral (fbW - 1) :: Float
       maxY = Prelude.fromIntegral (fbH - 1) :: Float
       clampInt lo hi v = Prelude.max lo (Prelude.min hi v)
