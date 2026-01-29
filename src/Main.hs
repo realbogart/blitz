@@ -29,7 +29,7 @@ targetFramesPerSecond :: Int
 targetFramesPerSecond = 120
 
 demoPrims :: Int
-demoPrims = min 1000 Blitz.maxNumPrims
+demoPrims = min 2000 Blitz.maxNumPrims
 
 data Env = Env
   { envWindow :: WindowResources,
@@ -67,7 +67,7 @@ tick env = do
 
 drawScene :: Float -> DrawM ()
 drawScene frame = do
-  let t = frame / 60
+  let t = frame / 120
       camZoomAt = 0.1 * (1.4 + sin (t * 0.5))
       cam =
         Camera2D
@@ -86,18 +86,18 @@ drawScene frame = do
           let fi = Prelude.fromIntegral (i + 1) :: Float
               baseX = Prelude.fromIntegral ((i * 97) `Prelude.rem` 1600) / 20 - 4.0
               baseY = Prelude.fromIntegral ((i * 61) `Prelude.rem` 1200) / 20 - 4.0
-              pxAt = baseX + 0.8 * cos (frame / 40 + fi * 0.3)
-              pyAt = baseY + 0.8 * sin (frame / 35 + fi * 0.4)
+              pxAt = baseX + 1.8 * cos (frame / 400 + fi * 0.3)
+              pyAt = baseY + 1.8 * sin (frame / 350 + fi * 0.4)
               isCircle = (i + 1) `Prelude.rem` 3 Prelude./= 0 -- 2/3 circles, 1/3 lines
-              colAt = 0xFF000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
+              colAt = 0x88000000 + Prelude.fromIntegral (Prelude.floor (fi * 12345) `Prelude.rem` 0x00FFFFFF)
           if isCircle
-            then drawCircle pxAt pyAt (0.12 + 0.06 * sin (frame / 15 + fi)) colAt
+            then drawCircle pxAt pyAt (0.12 + 0.6 * sin (frame / 150 + fi)) colAt
             else do
               let lineLen = 0.45 + 0.2 * sin (fi * 0.5)
                   lineAngle = frame / 60 + fi * 0.7
                   lx2 = pxAt + lineLen * cos lineAngle
                   ly2 = pyAt + lineLen * sin lineAngle
-              drawLine pxAt pyAt lx2 ly2 0.06 colAt
+              drawLine pxAt pyAt lx2 ly2 0.12 colAt
           go (i + 1)
 
 main :: IO ()

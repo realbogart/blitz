@@ -23,6 +23,7 @@ import Blitz.Draw (DrawM, runDrawFrame)
 import Blitz.Framebuffer (fbH, fbW)
 import Control.Monad (when)
 import Data.Array.Accelerate as A
+import Data.Array.Accelerate.Data.Bits qualified as ABits
 import Data.Array.Accelerate.IO.Data.Vector.Storable qualified as AVS
 import Data.Array.Accelerate.LLVM.Native as CPU
 import Data.IORef
@@ -301,6 +302,31 @@ renderPipeline input =
               Acc (Vector Int32)
             )
         )
+      unpackARGB c =
+        let a = ABits.shiftR c (A.constant 24) ABits..&. A.constant 0xFF
+            r = ABits.shiftR c (A.constant 16) ABits..&. A.constant 0xFF
+            g = ABits.shiftR c (A.constant 8) ABits..&. A.constant 0xFF
+            b = c ABits..&. A.constant 0xFF
+         in (a, r, g, b)
+      packARGB (a, r, g, b) =
+        ABits.shiftL a (A.constant 24)
+          ABits..|. ABits.shiftL r (A.constant 16)
+          ABits..|. ABits.shiftL g (A.constant 8)
+          ABits..|. b
+      mulDiv255 x invA = (x * invA + A.constant 127) `A.quot` A.constant 255
+      -- Premultiplied alpha over: out = src + dst * (1 - src.a).
+      overPremul src dst =
+        let (sa, sr, sg, sb) = unpackARGB src
+            (da, dr, dg, db) = unpackARGB dst
+            invA = A.constant 255 - sa
+            outR = sr + mulDiv255 dr invA
+            outG = sg + mulDiv255 dg invA
+            outB = sb + mulDiv255 db invA
+            outA = sa + mulDiv255 da invA
+         in packARGB (outA, outR, outG, outB)
+      overAlpha sa da =
+        let invA = A.constant 255 - sa
+         in sa + mulDiv255 da invA
 
       -- Precompute bounding boxes as arrays (enables better memory access patterns)
       primSh = A.index1 (A.size tags)
@@ -339,10 +365,11 @@ renderPipeline input =
               A.min
                 (A.constant maxPrimsPerTile)
                 (A.fromIntegral (tileCounts A.! A.index1 tileId) :: Exp Int)
-            initial = A.lift (tileCount - 1, A.constant 0xFF000000 :: Exp Word32)
-            wcond st = let (i, _) = A.unlift st :: (Exp Int, Exp Word32) in i A.>= 0
+            initial =
+              A.lift (tileCount - 1, A.constant 0xFF000000 :: Exp Word32, A.constant 0 :: Exp Word32)
+            wcond st = let (i, _, _) = A.unlift st :: (Exp Int, Exp Word32, Exp Word32) in i A.>= 0
             body st =
-              let (i, acc) = A.unlift st :: (Exp Int, Exp Word32)
+              let (i, acc, accA) = A.unlift st :: (Exp Int, Exp Word32, Exp Word32)
                   binIndex = tileId * A.constant maxPrimsPerTile + i
                   primIdx = A.fromIntegral (tileBinsFlat A.! A.index1 binIndex)
                   -- Quick bbox rejection first (cheap)
@@ -353,7 +380,7 @@ renderPipeline input =
                       A.&& py A.<= maxYs A.!! primIdx
                in A.cond
                     (A.not inBox)
-                    (A.lift (i - 1, acc)) -- skip if outside bbox
+                    (A.lift (i - 1, acc, accA)) -- skip if outside bbox
                     ( let tag = tags A.!! primIdx
                           lx1 = x1s A.!! primIdx
                           ly1 = y1s A.!! primIdx
@@ -367,8 +394,12 @@ renderPipeline input =
                           circleHit = ddx * ddx + ddy * ddy A.< s * s
                           lineHit = lineHitTest px py lx1 ly1 lx2 ly2 s
                           isHit = isCircle ? (circleHit, lineHit)
-                          newAcc = isHit ? (col, acc)
-                          newI = isHit ? (A.constant (-1), i - 1)
-                       in A.lift (newI, newAcc)
+                          newAcc = isHit ? (overPremul col acc, acc)
+                          (srcA, _, _, _) = unpackARGB col
+                          newAccA = isHit ? (overAlpha srcA accA, accA)
+                          newI = A.cond (isHit A.&& newAccA A.== 255) (A.constant (-1)) (i - 1)
+                       in A.lift (newI, newAcc, newAccA)
                     )
-         in A.snd (A.while wcond body initial)
+            final = A.while wcond body initial
+            (_, finalAcc, _) = A.unlift final :: (Exp Int, Exp Word32, Exp Word32)
+         in finalAcc
