@@ -150,19 +150,20 @@ toPxLen (WorldSpace cam) !len =
   let !scale = baseScale * cam.camZoom
    in len * scale
 
-premulARGB :: Word32 -> Word32
-premulARGB c =
+-- Colors use ABGR (0xAABBGGRR) so bytes are RGBA on little-endian.
+premulABGR :: Word32 -> Word32
+premulABGR c =
   let a = (c `shiftR` 24) .&. 0xFF
-      r = (c `shiftR` 16) .&. 0xFF
+      b = (c `shiftR` 16) .&. 0xFF
       g = (c `shiftR` 8) .&. 0xFF
-      b = c .&. 0xFF
+      r = c .&. 0xFF
       mul x = (x * a + 127) `quot` 255
       r' = mul r
       g' = mul g
       b' = mul b
-   in (a `shiftL` 24) .|. (r' `shiftL` 16) .|. (g' `shiftL` 8) .|. b'
+   in (a `shiftL` 24) .|. (b' `shiftL` 16) .|. (g' `shiftL` 8) .|. r'
 
--- | Draw a circle at (x, y) with radius r and color col
+-- | Draw a circle at (x, y) with radius r and color col (ABGR).
 {-# INLINE drawCircle #-}
 drawCircle :: Float -> Float -> Float -> Word32 -> DrawM ()
 drawCircle !x !y !r !col = DrawM $ \env !i ->
@@ -170,7 +171,7 @@ drawCircle !x !y !r !col = DrawM $ \env !i ->
     then do
       let (!px, !py) = toPxPoint env.space x y
           !pr = toPxLen env.space r
-          !pcol = premulARGB col
+          !pcol = premulABGR col
       VSM.unsafeWrite env.tags i env.circleTag
       VSM.unsafeWrite env.x1s i px
       VSM.unsafeWrite env.y1s i py
@@ -182,7 +183,7 @@ drawCircle !x !y !r !col = DrawM $ \env !i ->
       pure (i', ())
     else pure (i, ())
 
--- | Draw a line from (x1, y1) to (x2, y2) with thickness and color
+-- | Draw a line from (x1, y1) to (x2, y2) with thickness and color (ABGR).
 {-# INLINE drawLine #-}
 drawLine :: Float -> Float -> Float -> Float -> Float -> Word32 -> DrawM ()
 drawLine !lx1 !ly1 !lx2 !ly2 !thickness !col = DrawM $ \env !i ->
@@ -191,7 +192,7 @@ drawLine !lx1 !ly1 !lx2 !ly2 !thickness !col = DrawM $ \env !i ->
       let (!px1, !py1) = toPxPoint env.space lx1 ly1
           (!px2, !py2) = toPxPoint env.space lx2 ly2
           !pth = toPxLen env.space thickness
-          !pcol = premulARGB col
+          !pcol = premulABGR col
       VSM.unsafeWrite env.tags i env.lineTag
       VSM.unsafeWrite env.x1s i px1
       VSM.unsafeWrite env.y1s i py1

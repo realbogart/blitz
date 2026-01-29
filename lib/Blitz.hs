@@ -302,28 +302,29 @@ renderPipeline input =
               Acc (Vector Int32)
             )
         )
-      unpackARGB c =
+      -- ABGR word layout so memory is RGBA on little-endian.
+      unpackABGR c =
         let a = ABits.shiftR c (A.constant 24) ABits..&. A.constant 0xFF
-            r = ABits.shiftR c (A.constant 16) ABits..&. A.constant 0xFF
+            b = ABits.shiftR c (A.constant 16) ABits..&. A.constant 0xFF
             g = ABits.shiftR c (A.constant 8) ABits..&. A.constant 0xFF
-            b = c ABits..&. A.constant 0xFF
+            r = c ABits..&. A.constant 0xFF
          in (a, r, g, b)
-      packARGB (a, r, g, b) =
+      packABGR (a, r, g, b) =
         ABits.shiftL a (A.constant 24)
-          ABits..|. ABits.shiftL r (A.constant 16)
+          ABits..|. ABits.shiftL b (A.constant 16)
           ABits..|. ABits.shiftL g (A.constant 8)
-          ABits..|. b
+          ABits..|. r
       mulDiv255 x invA = (x * invA + A.constant 127) `A.quot` A.constant 255
       -- Premultiplied alpha over: out = src + dst * (1 - src.a).
       overPremul src dst =
-        let (sa, sr, sg, sb) = unpackARGB src
-            (da, dr, dg, db) = unpackARGB dst
+        let (sa, sr, sg, sb) = unpackABGR src
+            (da, dr, dg, db) = unpackABGR dst
             invA = A.constant 255 - sa
             outR = sr + mulDiv255 dr invA
             outG = sg + mulDiv255 dg invA
             outB = sb + mulDiv255 db invA
             outA = sa + mulDiv255 da invA
-         in packARGB (outA, outR, outG, outB)
+         in packABGR (outA, outR, outG, outB)
       overAlpha sa da =
         let invA = A.constant 255 - sa
          in sa + mulDiv255 da invA
@@ -395,7 +396,7 @@ renderPipeline input =
                           lineHit = lineHitTest px py lx1 ly1 lx2 ly2 s
                           isHit = isCircle ? (circleHit, lineHit)
                           newAcc = isHit ? (overPremul col acc, acc)
-                          (srcA, _, _, _) = unpackARGB col
+                          (srcA, _, _, _) = unpackABGR col
                           newAccA = isHit ? (overAlpha srcA accA, accA)
                           newI = A.cond (isHit A.&& newAccA A.== 255) (A.constant (-1)) (i - 1)
                        in A.lift (newI, newAcc, newAccA)

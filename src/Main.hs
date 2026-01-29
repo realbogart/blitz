@@ -76,9 +76,9 @@ drawScene frame = do
             camZoom = camZoomAt
           }
   withCamera cam (go 0)
-  drawLine 12 12 160 12 2 0xFF00D06A
-  -- drawLine 8 8 260 160 0.5 0xFFFFD06A
-  drawCircle 24 28 6 0xFFFFC857
+  drawLine 12 12 160 12 2 0xFF6AD000
+  -- drawLine 8 8 260 160 0.5 0xFF6AD0FF
+  drawCircle 24 28 6 0xFFFF0000
   where
     go !i
       | i Prelude.== demoPrims = pure ()
